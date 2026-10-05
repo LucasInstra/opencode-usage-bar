@@ -100,6 +100,9 @@ function normalizeConfig(parsed: any): Config {
   const refresh = Number(src.refreshSeconds)
   if (Number.isFinite(refresh) && refresh > 0) cfg.refreshSeconds = Math.max(10, Math.floor(refresh))
 
+  const bias = Number(src.percentBias)
+  if (Number.isFinite(bias)) cfg.percentBias = Math.min(100, Math.max(-100, Math.trunc(bias)))
+
   const show = src.show ?? {}
   for (const key of Object.keys(DEFAULT_CONFIG.show) as (keyof Config["show"])[]) {
     if (typeof show[key] === "boolean") cfg.show[key] = show[key]
