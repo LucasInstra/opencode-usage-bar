@@ -1,8 +1,9 @@
 {
-  "$comment": "Config do plugin usage-bar. plan: go | go_plus. source: auto (API oficial; sem ela o fallback é aproximado e marcado com ~) | official (só API Go /usage) | console (API do Console) | local. Credencial: env USAGE_BAR_CONSOLE_KEY (preferida) ou console.key. show.reset: countdown do reset mensal oficial. refreshSeconds: mínimo 10.",
+  "$comment": "Config do plugin usage-bar. plan: go | go_plus. source: auto (API oficial; sem ela o fallback é aproximado e marcado com ~) | official (só API Go /usage) | console (API do Console) | local. Credencial: env USAGE_BAR_CONSOLE_KEY (preferida) ou console.key. show.reset: countdown do reset mensal oficial. refreshSeconds: mínimo 10. percentBias: soma na exibição do % (1 acompanha o arredondamento do site, que arredonda enquanto a API trunca; use 0 para desligar).",
   "plan": "go",
   "source": "auto",
   "consoleRange": "30d",
+  "percentBias": 1,
   "cycle": { "mode": "billing", "day": 14 },
   "windows": [
     { "label": "30d", "hours": 720, "share": 1.0 }

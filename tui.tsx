@@ -50,6 +50,7 @@ type Config = {
   windows: WindowCfg[]
   limits: Record<string, number>
   refreshSeconds: number
+  percentBias: number
   show: { plan: boolean; context: boolean; path: boolean; branch: boolean; diff: boolean; cost: boolean; reset: boolean }
 }
 
@@ -61,6 +62,7 @@ const DEFAULT_CONFIG: Config = {
   windows: [{ label: "30d", hours: 720, share: 1.0 }],
   limits: {},
   refreshSeconds: 60,
+  percentBias: 0,
   show: { plan: true, context: true, path: false, branch: false, diff: true, cost: true, reset: false },
 }
 
@@ -470,7 +472,8 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     if (CONFIG.show.path && path()) parts.push(path()!)
     if (CONFIG.show.branch && branch()) parts.push(`git:${branch()}`)
     const o = official()
-    const pct = o ? o.percent : planPct()
+    const rawPct = o ? o.percent : planPct()
+    const pct = rawPct === null ? null : Math.max(0, rawPct + (CONFIG.percentBias || 0))
     // Sem dado oficial, o percentual vem do fallback (aproximado): marca com "~".
     if (CONFIG.show.plan && pct !== null) parts.push(o ? `${pct}%` : `~${pct}%`)
     if (CONFIG.show.reset && o?.resetsAt) parts.push(`\u21BB ${fmtDur(o.resetsAt! - now())}`)

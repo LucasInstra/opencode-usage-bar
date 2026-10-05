@@ -29,7 +29,7 @@ Layout esperado:
 | `C:\Users\Lucas\.config\opencode\plugins\usage-bar\tui.tsx` | **O plugin** (todo o código da TUI) |
 | `...\usage-bar\index.ts` | Entrada de servidor (no-op; necessária para a descoberta do plugin) |
 | `...\usage-bar\config.json` | Configuração do plugin |
-| `...\usage-bar\console.key` | Chave de serviço do Console (1 linha) — **segredo** |
+| `...\usage-bar\console.key` | Chave de serviço do Console (1 linha) — **segredo**. Pode ser substituída pela env `USAGE_BAR_CONSOLE_KEY` (preferida) |
 | `...\usage-bar\node_modules\` | `@opencode/plugin@2.0.22` instalado (resolve o import do `index.ts`) |
 | `C:\Users\Lucas\.config\opencode\cli.json` | Desativa o rodapé padrão (`-opencode.prompt.footer`) para não duplicar contexto/custo |
 | `C:\Users\Lucas\.config\opencode\opencode.json` | Plugin `opencode-status-popup` (tray) — não relacionado |
@@ -74,6 +74,7 @@ Slots usados no `prompt.footer`:
 | `consoleRange` | `24h` \| `7d` \| `30d` \| `all` | Janela do fallback Console |
 | `cycle` | `{ mode: "billing"\|"calendar"\|"rolling", day }` | Só na fonte local (dia 14) |
 | `refreshSeconds` | número | Intervalo de atualização (60s; mínimo 10) |
+| `percentBias` | número | Soma na exibição do % (1 = acompanha o arredondamento do site; 0 desliga) |
 | `show.path/branch/plan/context/diff/cost/reset` | bool | Liga/desliga cada item |
 
 Credencial: env `USAGE_BAR_CONSOLE_KEY` (preferida) ou arquivo `console.key` ao lado do plugin. O `config.json` é validado/normalizado (valores inválidos caem no default).
@@ -88,7 +89,7 @@ Credencial: env `USAGE_BAR_CONSOLE_KEY` (preferida) ou arquivo `console.key` ao 
 - Limites da Go (docs): por modelo; janelas **5h = 20%**, **semana = 50%**, **mês = 100%** do limite mensal. O endpoint oficial devolve % do **plano inteiro** (igual ao Console).
 - Reset mensal oficial: **14/10/2026 17:06 UTC** (assinatura renova dia 14). Weekly reseta segunda 00:00 UTC.
 - `show.reset: false` por padrão; ligar para exibir `↻ 11d 13h` ao lado do %.
-- **Diferença de 1 ponto vs. site:** o site **arredonda** o percentual (83,6% → 84%) e a API pública `/zen/go/v1/usage` **trunca** o inteiro (→ 83). Não há parâmetro com decimais (`detailed`/`full`/`window` são ignorados) e a resposta é `no-store`. O plugin mostra o valor da API; a diferença se resolve quando o inteiro cruza. Única alternativa para valor exato: capturar headers de rate limit das respostas de inferência (não verificado se a Go envia).
+- **Diferença de 1 ponto vs. site:** o site **arredonda** o percentual (83,6% → 84%) e a API pública `/zen/go/v1/usage` **trunca** o inteiro (→ 83). Não há parâmetro com decimais (`detailed`/`full`/`window` são ignorados) e a resposta é `no-store`. Para acompanhar o site, o `config.json` usa `"percentBias": 1` (soma 1 na exibição; trade-off: quando a fração real for < 0,5 o site mostra o mesmo inteiro da API e a barra fica 1 acima — usar 0 para desligar). Única alternativa para valor exato: capturar headers de rate limit das respostas de inferência (não verificado se a Go envia).
 
 ---
 
