@@ -96,11 +96,11 @@ Credencial: env `USAGE_BAR_CONSOLE_KEY` (preferida) ou arquivo `console.key` ao 
 ## 6. Bugs já corrigidos
 
 1. **Erro a cada boot:** `index.ts` importava `@opencode/plugin` sem `node_modules` → instalado `@opencode/plugin@2.0.22` na pasta do plugin (import validado).
-2. **`~` aparecendo à direita do `81%`:** itens com `<Show>` condicional eram inseridos fora de ordem quando a pasta resolvia depois do 1º render → trocado por **texto único via `createMemo`** (ordem fixa: pasta → branch → %).
-3. Duplicidade do contador de contexto/custo: resolvida desativando `opencode.prompt.footer` no `cli.json`.
-4. **Custo ignorando subagentes:** o `$` usava `session().cost`, que exclui as sessões filhas. Agora usa `ctx.data.session.cost(sessionID)` — chamado na sessão raiz, ele soma a família inteira (confirmado: raiz com 2 subagentes tinha $0.0407 fora da conta).
-4. **Pasta duplicada (esquerda e direita do `%`) — causa raiz real:** o rodapé **nativo** do host renderiza `pasta:branch` num `<text id="prompt.footer.location">` dentro de `prompt.footer.status` (bloco nativo, **não** é o plugin `opencode.prompt.footer`; por isso desativá-lo não removeu). O bug anterior não era ordem de render. Fix em `setup`: esconder o elemento via `context.renderer.root.findDescendantById("prompt.footer.location").visible = false` (o setter chama `yogaNode.setDisplay(NONE)`, removendo do layout), reaplicado a cada 1s porque o host remonta o elemento (hints/troca de sessão). **Confirmado visualmente em 03/10/2026.**
+2. Duplicidade do contador de contexto/custo: resolvida desativando `opencode.prompt.footer` no `cli.json`.
+3. **Custo ignorando subagentes:** o `$` usava `session().cost`, que exclui as sessões filhas. Agora usa `ctx.data.session.cost(sessionID)` — chamado na sessão raiz, ele soma a família inteira (confirmado: raiz com 2 subagentes tinha $0.0407 fora da conta).
+4. **Pasta duplicada (`~` à direita do `%`) — causa raiz real:** o rodapé **nativo** do host renderiza `pasta:branch` num `<text id="prompt.footer.location">` dentro de `prompt.footer.status` (bloco nativo, **não** é o plugin `opencode.prompt.footer`; por isso desativá-lo não removeu). Fix em `setup`: esconder o elemento via `context.renderer.root.findDescendantById("prompt.footer.location").visible = false` (o setter chama `yogaNode.setDisplay(NONE)`, removendo do layout), reaplicado a cada 1s porque o host remonta o elemento (hints/troca de sessão). **Confirmado visualmente em 03/10/2026.** (A tentativa anterior com texto único via `createMemo` não era a causa; foi mantida por ordem estável dos itens.)
 5. **Endurecimento (sessão de continuação):** validação/normalização do `config.json` (`refreshSeconds` ≥ 10, `source`/`cycle`/`windows`/`limits`/`show`); timeout + `AbortController` nas requisições HTTP (10–15s); `deadline` de 15s nas chamadas locais (`session.stats`, `vcs.status`); uma atualização por vez com **escopo** (sessão/modelo/pasta) — respostas antigas são descartadas e atualizações concorrentes não se sobrepõem; `%` oficial buscado mesmo sem modelo; fallback exibido como `~NN%`; credencial via env `USAGE_BAR_CONSOLE_KEY` (fallback: arquivo).
+6. **`percentBias` ignorado (05/10/2026):** o `normalizeConfig` remonta o config campo a campo e **não repassava** o `percentBias` — o valor do `config.json` era descartado e a barra continuava no inteiro truncado da API (83, enquanto o site mostrava 84). Fix: `normalizeConfig` valida/repassa `percentBias` (clamp -100..100). Commit `e0b27b5`. **Confirmado: barra 84 = site 84.**
 
 ---
 
@@ -133,10 +133,10 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 
 ---
 
-## 9. Estado do uso no momento do handoff (03/10/2026)
+## 9. Estado do uso no momento do handoff (05/10/2026)
 
-- **rolling:** 0% (reseta 09:16 UTC)
-- **weekly:** 47% (reseta 05/10 00:00 UTC)
-- **monthly:** **82%** (reseta 14/10 17:06 UTC)
+- **rolling:** 6% (reseta 05/10 17:00 UTC)
+- **weekly:** 2% (reseta 12/10 00:00 UTC)
+- **monthly:** **83% na API / 84% no site** (reseta 14/10 17:06 UTC) — a barra com `percentBias: 1` exibe **84**
 
-_Atualizado na sessão de continuação (03/10/2026). Fix do path duplicado **aplicado e confirmado**; endurecimento de config/requisições aplicado (ver item 5 em "Bugs já corrigidos")._
+_Atualizado em 05/10/2026 (2ª sessão): fix do `percentBias` no `normalizeConfig` (commit `e0b27b5`), barra confirmada em 84 = site. Notas da sessão de continuação anteriores mantidas._
