@@ -1,0 +1,21 @@
+{
+  "$comment": "Config do plugin usage-bar. plan: go | go_plus. source: auto (API oficial; sem ela o fallback é aproximado e marcado com ~) | official (só API Go /usage) | console (API do Console) | local. Credencial: env USAGE_BAR_CONSOLE_KEY (preferida) ou console.key. show.reset: countdown do reset mensal oficial. refreshSeconds: mínimo 10.",
+  "plan": "go",
+  "source": "auto",
+  "consoleRange": "30d",
+  "cycle": { "mode": "billing", "day": 14 },
+  "windows": [
+    { "label": "30d", "hours": 720, "share": 1.0 }
+  ],
+  "limits": {},
+  "refreshSeconds": 60,
+  "show": {
+    "path": true,
+    "branch": true,
+    "plan": true,
+    "context": true,
+    "diff": true,
+    "cost": true,
+    "reset": false
+  }
+}
