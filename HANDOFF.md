@@ -88,6 +88,7 @@ Credencial: env `USAGE_BAR_CONSOLE_KEY` (preferida) ou arquivo `console.key` ao 
 - Limites da Go (docs): por modelo; janelas **5h = 20%**, **semana = 50%**, **mês = 100%** do limite mensal. O endpoint oficial devolve % do **plano inteiro** (igual ao Console).
 - Reset mensal oficial: **14/10/2026 17:06 UTC** (assinatura renova dia 14). Weekly reseta segunda 00:00 UTC.
 - `show.reset: false` por padrão; ligar para exibir `↻ 11d 13h` ao lado do %.
+- **Diferença de 1 ponto vs. site:** o site **arredonda** o percentual (83,6% → 84%) e a API pública `/zen/go/v1/usage` **trunca** o inteiro (→ 83). Não há parâmetro com decimais (`detailed`/`full`/`window` são ignorados) e a resposta é `no-store`. O plugin mostra o valor da API; a diferença se resolve quando o inteiro cruza. Única alternativa para valor exato: capturar headers de rate limit das respostas de inferência (não verificado se a Go envia).
 
 ---
 
