@@ -3,3 +3,6 @@ console.key
 
 # dependências
 node_modules/
+
+# estado do clique (persist: file)
+compact-state.json

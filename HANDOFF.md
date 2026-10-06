@@ -77,7 +77,7 @@ Slots usados no `prompt.footer`:
 | `percentBias` | número | Soma na exibição do % (1 = acompanha o arredondamento do site; 0 desliga) |
 | `show.path/branch/plan/context/diff/cost/reset` | bool | Liga/desliga cada item |
 
-Credencial: env `USAGE_BAR_CONSOLE_KEY` (preferida) ou arquivo `console.key` ao lado do plugin. O `config.json` é validado/normalizado (valores inválidos caem no default).
+Credencial (ordem de resolução): env `USAGE_BAR_CONSOLE_KEY` → arquivo `console.key` ao lado do plugin → `auth.json` do próprio opencode (provider `opencode-go`, presente em qualquer máquina logada no plano). O `config.json` é validado/normalizado (valores inválidos caem no default).
 
 ---
 
@@ -139,4 +139,24 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 - **weekly:** 2% (reseta 12/10 00:00 UTC)
 - **monthly:** **83% na API / 84% no site** (reseta 14/10 17:06 UTC) — a barra com `percentBias: 1` exibe **84**
 
-_Atualizado em 05/10/2026 (2ª sessão): fix do `percentBias` no `normalizeConfig` (commit `e0b27b5`), barra confirmada em 84 = site. Notas da sessão de continuação anteriores mantidas._
+---
+
+## 10. Sessão 06/10/2026 — compact por clique + credencial via auth.json
+
+### 10.1 Compactar pasta/branch por clique (novo)
+
+- **Clique** na pasta/branch cicla níveis: pasta `full → short (última pasta) → initials → alias` (alias só se configurado); branch `full → curta → iniciais → [hidden se main/master]`.
+- **alt+clique** volta um nível; **shift+clique** copia o valor completo (OSC 52, `copy: true`); **hover** acende a parte clicável.
+- **Keybinds** de fallback: `alt+p` (pasta) e `alt+g` (branch) via `ctx.keymap.layer`.
+- **Config novo** (`config.json` → bloco `compact`): `click` (cycle|toggle|off), `alias` (basename case-insensitive → apelido; desempate por caminho completo), `initials` ({from: last|lastTwo|whole, min}), `pathLevels`/`branchLevels`, `hideMainBranch`, `hover`, `copy`, `persist` (session|file; file grava `compact-state.json`), `keybinds` (null desliga).
+- Níveis que renderizam o **mesmo texto** são pulados (ex.: `full == short` em caminho curto), então todo clique muda algo visível.
+- Descobertas validadas no host (tag `v2.0.23`): (a) o rodapé suporta mouse por design (o próprio `opencode.prompt.footer` usa `<box onMouseUp>`); (b) o mouse-up chega com **`isDragging=true` sempre** — não filtrar por isso (só por `button`); (c) guard de botão aceita `undefined/0/3/"left"`.
+- Cliques confirmados visualmente em 06/10/2026 (pasta e branch, com intermediário).
+
+### 10.2 Credencial da API oficial sem `console.key`
+
+- O opencode guarda a credencial do plano em `~/.local/share/opencode/auth.json` (provider `opencode-go`, `{type:"api", key}`) e ela **funciona** em `/zen/go/v1/usage`.
+- O plugin resolve nesta ordem: env `USAGE_BAR_CONSOLE_KEY` → `console.key` → `auth.json` (revalida a cada 5 min).
+- Confirmado em 06/10/2026: barra com o % oficial (API 85 + `percentBias: 1` = 86 = site).
+
+_Atualizado em 06/10/2026 (3ª sessão): compact por clique + credencial via auth.json; instrumentação de debug removida. Notas das sessões anteriores mantidas._
