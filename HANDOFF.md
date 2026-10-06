@@ -1,4 +1,4 @@
-# Handoff — Plugin `usage-bar` (barra de status da TUI do opencode)
+# Handoff - Plugin `opencode-usage-bar` (barra de status da TUI do opencode)
 
 **Data:** 03/10/2026
 **Ambiente:** Windows · opencode v2.0.22 (npm) · tema `orng`
@@ -126,7 +126,7 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 ## 8. Pendências / próximos passos
 
 1. ~~Reiniciar/reload e confirmar layout.~~ **Confirmado em 03/10/2026:** barra correta, uma única pasta, sem erro no boot.
-2. ~~Carregamento explícito no `cli.json`.~~ Não é necessário: `GET /api/plugin` mostra `luccas.usage-bar` ativo com `features: {server, tui}`; log sem WARN/ERROR.
+2. ~~Carregamento explícito no `cli.json`.~~ Não é necessário: `GET /api/plugin` mostra `opencode.usage-bar` ativo com `features: {server, tui}`; log sem WARN/ERROR.
 3. Opcional: mostrar também **rolling (5h)** e **weekly** na barra (o endpoint já entrega).
 4. Opcional: `"reset": true` no `show` para o countdown oficial.
 5. **Segurança:** preferir a env `USAGE_BAR_CONSOLE_KEY` ao arquivo `console.key`; a service key atual tem permissão **All** (gerencia budgets) — revogar/rotacionar no Console quando não precisar; para desligar o uso: `"source": "local"`.
@@ -160,4 +160,13 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 - O plugin resolve nesta ordem: env `USAGE_BAR_CONSOLE_KEY` → `console.key` → `auth.json` (revalida a cada 5 min).
 - Confirmado em 06/10/2026: barra com o % oficial (API 85 + `percentBias: 1` = 86 = site).
 
-_Atualizado em 06/10/2026 (3ª sessão): compact por clique + credencial via auth.json; instrumentação de debug removida. Notas das sessões anteriores mantidas._
+---
+
+## 11. Sessão 06/10/2026 (4ª) — renomeado e movido
+
+- Repo renomeado: `LucasInstra/usage-bar` → **`LucasInstra/opencode-usage-bar`** (o GitHub mantém redirect do nome antigo; remotes atualizados).
+- Plugin id: `luccas.usage-bar` → **`opencode.usage-bar`** (padrão da família, ex.: `opencode.status-popup`).
+- No trabalho: o clone saiu de `~/.config/opencode/plugins/usage-bar` para **`C:\Users\lucas.rengel\opencode\opencode-usage-bar`**, com **junction** em `~/.config/opencode/plugins/opencode-usage-bar` (mesmo padrão usado antes em mini-session/session-titles).
+- Na casa (quando voltar): `git pull` continua funcionando via redirect; opcional espelhar o layout (mover + junction) e atualizar o remote.
+
+_Atualizado em 06/10/2026 (4ª sessão): rename do repo/plugin para `opencode-usage-bar` e mudança de pasta com junction._

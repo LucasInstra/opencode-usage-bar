@@ -1,6 +1,6 @@
 <div align="center">
 
-# opencode usage-bar
+# opencode-usage-bar
 
 **Your whole session — and your plan — on one line at the bottom of the prompt.**
 
@@ -36,8 +36,8 @@ The "how much of my plan did I burn?" number lives on the website, and the defau
 OpenCode V2, tested on `2.0.23` (Windows). There is no npm package: the plugin is installed as a local TUI plugin.
 
 ```sh
-git clone https://github.com/LucasInstra/usage-bar.git ~/.config/opencode/plugins/usage-bar
-cd ~/.config/opencode/plugins/usage-bar
+git clone https://github.com/LucasInstra/opencode-usage-bar.git ~/.config/opencode/plugins/opencode-usage-bar
+cd ~/.config/opencode/plugins/opencode-usage-bar
 npm install --no-save @opencode/plugin@2.0.23   # match your opencode version; resolves the import in index.ts
 ```
 

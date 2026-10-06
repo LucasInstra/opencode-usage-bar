@@ -3,6 +3,6 @@
 import { Plugin } from "@opencode/plugin"
 
 export default Plugin.define({
-  id: "luccas.usage-bar",
+  id: "opencode.usage-bar",
   setup() {},
 })

@@ -975,7 +975,7 @@ function hideBuiltinLocation(context: any): void {
 
 // ---------------------------------------------------------------- plugin
 export default Plugin.define({
-  id: "luccas.usage-bar",
+  id: "opencode.usage-bar",
   setup(context) {
     hideBuiltinLocation(context)
     const hostFixTimer = setInterval(() => hideBuiltinLocation(context), 1000)
