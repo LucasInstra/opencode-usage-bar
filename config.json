@@ -5,7 +5,7 @@
   "consoleRange": "30d",
   "percentBias": 1,
   "compact": {
-    "$comment": "Clique na pasta/branch comprime em niveis (full -> short -> initials -> alias). click: cycle | toggle | off. alias: { nome-da-pasta: apelido }. initials.from: last | lastTwo | whole (min = letras quando o nome e uma palavra so). persist: session | file. keybinds: null desliga.",
+    "$comment": "Clique na pasta/branch comprime em niveis (full -> short -> initials -> alias). click: cycle | toggle | off. alias: { nome-da-pasta: apelido }. initials.from: last | lastTwo | whole (min = letras quando o nome e uma palavra so). persist: session | file (file grava compact-state.json e sincroniza abas/janelas). keybinds: null desliga.",
     "click": "cycle",
     "alias": {},
     "initials": { "from": "last", "min": 3 },
@@ -14,7 +14,7 @@
     "hideMainBranch": false,
     "hover": true,
     "copy": false,
-    "persist": "session",
+    "persist": "file",
     "keybinds": { "path": "alt+p", "branch": "alt+g" }
   },
   "cycle": { "mode": "billing", "day": 14 },

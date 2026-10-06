@@ -74,6 +74,7 @@ feature/remote-exam-retention →   feat/remote-exam-re… →   feat/rer  →  
 - Hover highlights the clickable parts
 - Keyboard fallbacks for the same actions: `alt+p` (path) and `alt+g` (branch)
 - Levels that would render the exact same text are skipped, so every click changes something
+- Tabs and windows stay in sync with `persist: "file"` (every instance watches the state file)
 
 ## Configuration (`config.json`)
 
@@ -92,7 +93,7 @@ feature/remote-exam-retention →   feat/remote-exam-re… →   feat/rer  →  
 | `compact.hideMainBranch` | boolean | `false` | hide `main`/`master` in the compacted branch |
 | `compact.hover` | boolean | `true` | brighten on hover |
 | `compact.copy` | boolean | `false` | shift+click copies (OSC 52) |
-| `compact.persist` | `session` \| `file` \| `off` | `session` | remember levels; `file` writes `compact-state.json` |
+| `compact.persist` | `session` \| `file` \| `off` | `session` | remember levels; `file` writes `compact-state.json` and syncs tabs/windows |
 | `compact.keybinds` | `{ path, branch }` \| `null` | `alt+p` / `alt+g` | keyboard fallbacks |
 
 ## How it works

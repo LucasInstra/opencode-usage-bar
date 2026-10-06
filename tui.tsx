@@ -5,7 +5,7 @@
 // Tudo em cinza, usando tokens do tema.
 import { Plugin } from "@opencode/plugin/tui"
 import { createEffect, createMemo, createSignal, ErrorBoundary, onCleanup } from "solid-js"
-import { readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, watch, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -304,25 +304,42 @@ function cycleStart(cycle: Cycle, nowMs: number): number {
 }
 
 // ---------------------------------------------------------------- compact (clique)
-// Estado de nível por pasta/branch, compartilhado entre as duas partes do footer
-// e com os keybinds. "session" guarda só em memória; "file" persiste ao lado do plugin.
+// Estado de nível por pasta/branch, compartilhado entre as duas partes do footer.
+// "session" guarda só em memória; "file" persiste em compact-state.json e sincroniza
+// abas/janelas via fs.watch (cada instância observa o arquivo).
 const pathLevelIndex = new Map<string, number>()
 const branchLevelIndex = new Map<string, number>()
 const [compactTick, setCompactTick] = createSignal(0)
 const COMPACT_STATE_URL = new URL("./compact-state.json", import.meta.url)
 let compactStateLoaded = false
+let compactStateWritten = ""
+let compactWatchStarted = false
+let compactWatchTimer: ReturnType<typeof setTimeout> | undefined
 let lastDir = ""
 let lastDisplayPath = ""
 let lastBranch = ""
+
+function applyCompactState(raw: string): void {
+  try {
+    const parsed = JSON.parse(raw)
+    pathLevelIndex.clear()
+    branchLevelIndex.clear()
+    for (const [key, value] of Object.entries(parsed?.path ?? {})) if (Number.isFinite(value)) pathLevelIndex.set(key, Number(value))
+    for (const [key, value] of Object.entries(parsed?.branch ?? {})) if (Number.isFinite(value)) branchLevelIndex.set(key, Number(value))
+    setCompactTick((t) => t + 1)
+  } catch {
+    // arquivo sendo escrito por outra instância; o próximo evento tenta de novo
+  }
+}
 
 function loadCompactState(): void {
   if (compactStateLoaded) return
   compactStateLoaded = true
   if (CONFIG.compact.persist !== "file") return
   try {
-    const raw = JSON.parse(readFileSync(COMPACT_STATE_URL, "utf8"))
-    for (const [key, value] of Object.entries(raw?.path ?? {})) if (Number.isFinite(value)) pathLevelIndex.set(key, Number(value))
-    for (const [key, value] of Object.entries(raw?.branch ?? {})) if (Number.isFinite(value)) branchLevelIndex.set(key, Number(value))
+    const raw = readFileSync(COMPACT_STATE_URL, "utf8")
+    applyCompactState(raw)
+    compactStateWritten = raw
   } catch {
     // sem estado salvo
   }
@@ -331,12 +348,42 @@ function loadCompactState(): void {
 function saveCompactState(): void {
   if (CONFIG.compact.persist !== "file") return
   try {
-    writeFileSync(
-      COMPACT_STATE_URL,
-      JSON.stringify({ path: Object.fromEntries(pathLevelIndex), branch: Object.fromEntries(branchLevelIndex) }, null, 2),
+    const text = JSON.stringify(
+      { path: Object.fromEntries(pathLevelIndex), branch: Object.fromEntries(branchLevelIndex) },
+      null,
+      2,
     )
+    writeFileSync(COMPACT_STATE_URL, text)
+    compactStateWritten = text
   } catch {
     // sem permissão de escrita
+  }
+}
+
+// Com "file", qualquer instância que escrever avisa as outras: compacta numa aba e as
+// demais refletem (debounce curto contra leituras de write parcial).
+function startCompactWatch(): void {
+  if (compactWatchStarted) return
+  compactWatchStarted = true
+  if (CONFIG.compact.persist !== "file") return
+  try {
+    watch(new URL(".", COMPACT_STATE_URL), (_event, filename) => {
+      const name = typeof filename === "string" ? filename : String(filename ?? "")
+      if (name && name !== "compact-state.json") return
+      if (compactWatchTimer) clearTimeout(compactWatchTimer)
+      compactWatchTimer = setTimeout(() => {
+        try {
+          const raw = readFileSync(COMPACT_STATE_URL, "utf8")
+          if (raw === compactStateWritten) return
+          applyCompactState(raw)
+          compactStateWritten = raw
+        } catch {
+          // sem arquivo ainda
+        }
+      }, 150)
+    })
+  } catch {
+    // fs.watch indisponível; segue só em memória
   }
 }
 
@@ -500,6 +547,7 @@ function cycleFromKey(kind: "path" | "branch"): void {
 }
 
 loadCompactState()
+startCompactWatch()
 
 // GET JSON com timeout/abort; null em qualquer falha (rede, status, parse).
 async function getJson(url: string, timeoutMs = 10_000): Promise<any | null> {
