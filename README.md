@@ -24,7 +24,7 @@ The "how much of my plan did I burn?" number lives on the website, and the defau
 | Left | Git branch | VCS info for the session location |
 | Left | **Plan usage %** | official Go API `GET /zen/go/v1/usage` (the bar shows the monthly window) |
 | Right | Context | last assistant message tokens ÷ model context limit |
-| Right | Git diff | `(+additions -deletions)` from the working tree |
+| Right | Git diff | `(+additions -deletions)` from the working tree; computed via `git` directly (the host API forces `core.autocrlf=false`, which inflates counts on CRLF worktrees) |
 | Right | Session cost | summed across the session family (session + subagents) |
 
 - No key configured? The percentage falls back to a local estimate and is marked `~86%`.

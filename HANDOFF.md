@@ -169,4 +169,13 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 - No trabalho: o clone saiu de `~/.config/opencode/plugins/usage-bar` para **`C:\Users\lucas.rengel\opencode\opencode-usage-bar`**, com **junction** em `~/.config/opencode/plugins/opencode-usage-bar` (mesmo padrão usado antes em mini-session/session-titles).
 - Na casa (quando voltar): `git pull` continua funcionando via redirect; opcional espelhar o layout (mover + junction) e atualizar o remote.
 
-_Atualizado em 06/10/2026 (4ª sessão): rename do repo/plugin para `opencode-usage-bar` e mudança de pasta com junction._
+---
+
+## 12. Sessão 06/10/2026 (5ª) — fix do diff inflado (CRLF)
+
+- Sintoma: a barra mostrava `(+7710 -7105)` no `in.pulse-analytics`; `git diff HEAD --shortstat` diz **+239 -43** (+3 arquivos novos).
+- Causa raiz (upstream, v2.0.23): `packages/core/src/plugin/vcs/git.ts` roda **todo** comando git com `-c core.autocrlf=false` (array `cfg`). Em worktree CRLF (repo com `core.autocrlf=true`), o diff byte a byte conta o arquivo inteiro (+N -N ≈ nº de linhas). Confirmado em laboratório: mesmo comando com e sem a flag → `+7301 -7105` vs `+239 -43`; a API ainda soma os untracked (+409) = `+7710 -7105`.
+- Fix no plugin: `computeDiff` roda `git diff --no-ext-diff --no-renames --numstat HEAD -- .` direto (respeitando a config do repo) + linhas dos untracked; fallback para a API do host quando não há git/repo/hg.
+- Nota: o mesmo `cfg` afeta os diffs de review do host (mesmo churn em CRLF) — vale reportar no upstream.
+
+_Atualizado em 06/10/2026 (5ª sessão): fix do diff (git direto) + diagnóstico do bug upstream._

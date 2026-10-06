@@ -5,6 +5,7 @@
 // Tudo em cinza, usando tokens do tema.
 import { Plugin } from "@opencode/plugin/tui"
 import { createEffect, createMemo, createSignal, ErrorBoundary, onCleanup } from "solid-js"
+import { execFile } from "node:child_process"
 import { readFileSync, watch, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -612,6 +613,73 @@ async function consoleModelCost(m: any): Promise<number | null> {
   return hit ? Number(hit.totalCostMicroCents) / 1e8 : 0
 }
 
+// ---------------------------------------------------------------- diff via git
+// A API do host roda `git ... -c core.autocrlf=false`, o que infla as contagens em
+// worktrees CRLF no Windows (cada linha "muda"); o git direto respeita a config do repo.
+function gitNumstat(dir: string): Promise<{ add: number; del: number } | null> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        "git",
+        ["diff", "--no-ext-diff", "--no-renames", "--numstat", "HEAD", "--", "."],
+        { cwd: dir, timeout: 12_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+        (err, stdout) => {
+          if (err) return resolve(null)
+          let add = 0
+          let del = 0
+          for (const line of String(stdout).split(/\r?\n/)) {
+            if (!line) continue
+            const [a, d] = line.split("\t")
+            const an = a === "-" ? 0 : Number.parseInt(a ?? "", 10)
+            const dn = d === "-" ? 0 : Number.parseInt(d ?? "", 10)
+            if (Number.isFinite(an)) add += an
+            if (Number.isFinite(dn)) del += dn
+          }
+          resolve({ add, del })
+        },
+      )
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
+function gitUntrackedLines(dir: string): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        "git",
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+        { cwd: dir, timeout: 12_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+        (err, stdout) => {
+          if (err) return resolve(0)
+          let lines = 0
+          for (const file of String(stdout).split("\0")) {
+            if (!file) continue
+            try {
+              const text = readFileSync(join(dir, file), "utf8")
+              if (!text) continue
+              lines += text.split("\n").length - (text.endsWith("\n") ? 1 : 0)
+            } catch {
+              // binário/ilegível: ignora
+            }
+          }
+          resolve(lines)
+        },
+      )
+    } catch {
+      resolve(0)
+    }
+  })
+}
+
+async function gitDiffTotals(dir: string): Promise<{ add: number; del: number } | null> {
+  const base = await gitNumstat(dir)
+  if (!base) return null
+  const untracked = await gitUntrackedLines(dir)
+  return { add: base.add + untracked, del: base.del }
+}
+
 // ---------------------------------------------------------------- component
 function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest" }) {
   const ctx = props.context
@@ -727,6 +795,11 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
   async function computeDiff(): Promise<{ add: number; del: number } | null> {
     const dir = location()?.directory
     if (!dir) return null
+    // 1) git direto: respeita a config do repo (a API do host força core.autocrlf=false
+    //    e infla as contagens em worktrees CRLF no Windows — bug upstream).
+    const viaGit = await deadline(gitDiffTotals(dir), 15_000)
+    if (viaGit) return viaGit
+    // 2) fallback: API do host (sem git disponível, repo hg etc.)
     try {
       const res = await deadline(Promise.resolve(client.vcs.status({ location: { directory: dir } })), 15_000)
       const rows = res?.data ?? res ?? []
