@@ -152,7 +152,7 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 - Níveis que renderizam o **mesmo texto** são pulados (ex.: `full == short` em caminho curto), então todo clique muda algo visível.
 - Descobertas validadas no host (tag `v2.0.23`): (a) o rodapé suporta mouse por design (o próprio `opencode.prompt.footer` usa `<box onMouseUp>`); (b) o mouse-up chega com **`isDragging=true` sempre** — não filtrar por isso (só por `button`); (c) guard de botão aceita `undefined/0/3/"left"`.
 - Cliques confirmados visualmente em 06/10/2026 (pasta e branch, com intermediário).
-- **Sync entre abas/janelas:** `persist: "file"` grava `compact-state.json` e cada instância observa o arquivo via `fs.watch` — compactar numa aba reflete nas outras. O `config.json` do repo passou a usar `"persist": "file"`.
+- **Sync entre abas/janelas:** `persist: "file"` grava `compact-state.json`; cada instância observa via `fs.watch` (+ varredura a cada 2s como fallback) — compactar numa aba reflete nas outras. O `config.json` do repo usa `"persist": "file"`.
 
 ### 10.2 Credencial da API oficial sem `console.key`
 

@@ -74,7 +74,7 @@ feature/remote-exam-retention →   feat/remote-exam-re… →   feat/rer  →  
 - Hover highlights the clickable parts
 - Keyboard fallbacks for the same actions: `alt+p` (path) and `alt+g` (branch)
 - Levels that would render the exact same text are skipped, so every click changes something
-- Tabs and windows stay in sync with `persist: "file"` (every instance watches the state file)
+- Tabs and windows stay in sync with `persist: "file"` (every instance watches the state file and rescans every 2s)
 
 ## Configuration (`config.json`)
 

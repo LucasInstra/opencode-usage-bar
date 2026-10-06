@@ -360,30 +360,33 @@ function saveCompactState(): void {
   }
 }
 
+function refreshCompactState(): void {
+  try {
+    const raw = readFileSync(COMPACT_STATE_URL, "utf8")
+    if (raw === compactStateWritten) return
+    applyCompactState(raw)
+    compactStateWritten = raw
+  } catch {
+    // sem arquivo ainda
+  }
+}
+
 // Com "file", qualquer instância que escrever avisa as outras: compacta numa aba e as
-// demais refletem (debounce curto contra leituras de write parcial).
+// demais refletem. fs.watch com debounce + varredura periódica como rede de segurança.
 function startCompactWatch(): void {
   if (compactWatchStarted) return
   compactWatchStarted = true
   if (CONFIG.compact.persist !== "file") return
+  setInterval(refreshCompactState, 2000)
   try {
     watch(new URL(".", COMPACT_STATE_URL), (_event, filename) => {
       const name = typeof filename === "string" ? filename : String(filename ?? "")
       if (name && name !== "compact-state.json") return
       if (compactWatchTimer) clearTimeout(compactWatchTimer)
-      compactWatchTimer = setTimeout(() => {
-        try {
-          const raw = readFileSync(COMPACT_STATE_URL, "utf8")
-          if (raw === compactStateWritten) return
-          applyCompactState(raw)
-          compactStateWritten = raw
-        } catch {
-          // sem arquivo ainda
-        }
-      }, 150)
+      compactWatchTimer = setTimeout(refreshCompactState, 150)
     })
   } catch {
-    // fs.watch indisponível; segue só em memória
+    // fs.watch indisponível; a varredura cobre
   }
 }
 
