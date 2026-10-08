@@ -76,6 +76,18 @@ feature/remote-exam-retention →   feat/remote-exam-re… →   feat/rer  →  
 - Levels that would render the exact same text are skipped, so every click changes something
 - Tabs and windows stay in sync with `persist: "file"` (every instance watches the state file and rescans every 2s)
 
+## Organized session titles (recommended pairing)
+
+The bar keeps the footer readable; session titles stay readable with a `[project]` prefix. Recommended pairing: [`@maximtop/opencode-session-namer`](https://www.npmjs.com/package/@maximtop/opencode-session-namer) — deterministic, no LLM by default, renames once after the first user message and never overwrites manual renames.
+
+```jsonc
+{
+  "plugins": ["@maximtop/opencode-session-namer"]
+}
+```
+
+Result: `[in.pulse-analytics] Fix flaky test`. Optional overrides live in `~/.config/opencode/session-namer.json` (template, max length, delay).
+
 ## Configuration (`config.json`)
 
 | key | values | default | what it does |
