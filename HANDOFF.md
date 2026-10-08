@@ -178,4 +178,13 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 - Fix no plugin: `computeDiff` roda `git diff --no-ext-diff --no-renames --numstat HEAD -- .` direto (respeitando a config do repo) + linhas dos untracked; fallback para a API do host quando não há git/repo/hg.
 - Nota: o mesmo `cfg` afeta os diffs de review do host (mesmo churn em CRLF) — vale reportar no upstream.
 
-_Atualizado em 06/10/2026 (5ª sessão): fix do diff (git direto) + diagnóstico do bug upstream._
+---
+
+## 13. Sessão 06/10/2026 (6ª) — diff alterna working/feature no clique
+
+- Pedido: clicar nos números `(+a -d)` alterna entre **working** (working tree vs HEAD, o comportamento atual) e **feature inteira** (merge-base com a branch padrão → working tree, incluindo os commits da branch).
+- Implementação: `gitBaseCommit` (origin/HEAD, senão main/master/develop → `merge-base HEAD <base>`), `gitFeatureTotals` (numstat a partir do merge-base + untracked), escopo por pasta com persistência no `compact-state.json` (sincroniza entre abas como o resto), marcador `≡` no modo feature (`diff.marker`, vazio desliga), keybind `alt+d`.
+- Fallbacks: sem base/sem git → volta para working (git direto, depois API do host).
+- Config nova: `diff: { defaultScope: "working", marker: "≡" }`.
+
+_Atualizado em 06/10/2026 (6ª sessão): toggle working/feature no diff + docs. Notas anteriores mantidas._

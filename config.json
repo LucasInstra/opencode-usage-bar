@@ -15,8 +15,9 @@
     "hover": true,
     "copy": false,
     "persist": "file",
-    "keybinds": { "path": "alt+p", "branch": "alt+g" }
+    "keybinds": { "path": "alt+p", "branch": "alt+g", "diff": "alt+d" }
   },
+  "diff": { "defaultScope": "working", "marker": "≡" },
   "cycle": { "mode": "billing", "day": 14 },
   "windows": [
     { "label": "30d", "hours": 720, "share": 1.0 }

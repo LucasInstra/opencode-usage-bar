@@ -24,7 +24,7 @@ The "how much of my plan did I burn?" number lives on the website, and the defau
 | Left | Git branch | VCS info for the session location |
 | Left | **Plan usage %** | official Go API `GET /zen/go/v1/usage` (the bar shows the monthly window) |
 | Right | Context | last assistant message tokens ÷ model context limit |
-| Right | Git diff | `(+additions -deletions)` from the working tree; computed via `git` directly (the host API forces `core.autocrlf=false`, which inflates counts on CRLF worktrees) |
+| Right | Git diff | `(+additions -deletions)`; click toggles working tree vs whole feature (merge-base → worktree). Computed via `git` directly (the host API forces `core.autocrlf=false`, which inflates counts on CRLF worktrees) |
 | Right | Session cost | summed across the session family (session + subagents) |
 
 - No key configured? The percentage falls back to a local estimate and is marked `~86%`.
@@ -76,6 +76,8 @@ feature/remote-exam-retention →   feat/remote-exam-re… →   feat/rer  →  
 - Levels that would render the exact same text are skipped, so every click changes something
 - Tabs and windows stay in sync with `persist: "file"` (every instance watches the state file and rescans every 2s)
 
+Click the diff numbers to toggle scope: working tree (`(+239 -43)`) vs whole feature (`(+1234 -567 ≡`), where the feature counts from the merge-base with the default branch (origin/HEAD, else main/master/develop) to the working tree, including branch commits. Falls back to working scope outside git repos. Keyboard: `alt+d`.
+
 ## Organized session titles (recommended pairing)
 
 The bar keeps the footer readable; session titles stay readable with a `[project]` prefix. Recommended pairing: [`@maximtop/opencode-session-namer`](https://www.npmjs.com/package/@maximtop/opencode-session-namer) — deterministic, no LLM by default, renames once after the first user message and never overwrites manual renames.
@@ -106,7 +108,9 @@ Result: `[in.pulse-analytics] Fix flaky test`. Optional overrides live in `~/.co
 | `compact.hover` | boolean | `true` | brighten on hover |
 | `compact.copy` | boolean | `false` | shift+click copies (OSC 52) |
 | `compact.persist` | `session` \| `file` \| `off` | `session` | remember levels; `file` writes `compact-state.json` and syncs tabs/windows |
-| `compact.keybinds` | `{ path, branch }` \| `null` | `alt+p` / `alt+g` | keyboard fallbacks |
+| `compact.keybinds` | `{ path, branch, diff }` \| `null` | `alt+p` / `alt+g` / `alt+d` | keyboard fallbacks (diff toggles working/feature) |
+| `diff.defaultScope` | `working` \| `feature` | `working` | initial diff scope per folder |
+| `diff.marker` | string | `≡` | suffix shown in feature scope (empty disables) |
 
 ## How it works
 

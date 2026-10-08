@@ -47,6 +47,7 @@ type WindowCfg = { label: string; hours: number; share: number }
 type Source = "auto" | "official" | "console" | "local"
 type CompactClick = "cycle" | "toggle" | "off"
 type CompactInitialsFrom = "last" | "lastTwo" | "whole"
+type DiffScope = "working" | "feature"
 type Compact = {
   click: CompactClick
   alias: Record<string, string>
@@ -57,7 +58,7 @@ type Compact = {
   hover: boolean
   copy: boolean
   persist: "session" | "file" | "off"
-  keybinds: { path: string | null; branch: string | null }
+  keybinds: { path: string | null; branch: string | null; diff: string | null }
 }
 type Config = {
   plan: "go" | "go_plus"
@@ -70,6 +71,7 @@ type Config = {
   percentBias: number
   show: { plan: boolean; context: boolean; path: boolean; branch: boolean; diff: boolean; cost: boolean; reset: boolean }
   compact: Compact
+  diff: { defaultScope: DiffScope; marker: string }
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -92,8 +94,9 @@ const DEFAULT_CONFIG: Config = {
     hover: true,
     copy: false,
     persist: "session",
-    keybinds: { path: "alt+p", branch: "alt+g" },
+    keybinds: { path: "alt+p", branch: "alt+g", diff: "alt+d" },
   },
+  diff: { defaultScope: "working", marker: "≡" },
 }
 
 const SOURCES: Source[] = ["auto", "official", "console", "local"]
@@ -116,6 +119,7 @@ function normalizeConfig(parsed: any): Config {
       branchLevels: [...DEFAULT_CONFIG.compact.branchLevels],
       keybinds: { ...DEFAULT_CONFIG.compact.keybinds },
     },
+    diff: { ...DEFAULT_CONFIG.diff },
   }
   const src = parsed ?? {}
   if (src.plan === "go" || src.plan === "go_plus") cfg.plan = src.plan
@@ -179,6 +183,10 @@ function normalizeConfig(parsed: any): Config {
   const kb = compact.keybinds ?? {}
   if (kb.path === null || typeof kb.path === "string") cfg.compact.keybinds.path = kb.path
   if (kb.branch === null || typeof kb.branch === "string") cfg.compact.keybinds.branch = kb.branch
+  if (kb.diff === null || typeof kb.diff === "string") cfg.compact.keybinds.diff = kb.diff
+  const diffCfg = src.diff ?? {}
+  if (diffCfg.defaultScope === "working" || diffCfg.defaultScope === "feature") cfg.diff.defaultScope = diffCfg.defaultScope
+  if (typeof diffCfg.marker === "string") cfg.diff.marker = diffCfg.marker.trim().slice(0, 3)
   return cfg
 }
 
@@ -310,6 +318,7 @@ function cycleStart(cycle: Cycle, nowMs: number): number {
 // abas/janelas via fs.watch (cada instância observa o arquivo).
 const pathLevelIndex = new Map<string, number>()
 const branchLevelIndex = new Map<string, number>()
+const diffScopeIndex = new Map<string, DiffScope>()
 const [compactTick, setCompactTick] = createSignal(0)
 const COMPACT_STATE_URL = new URL("./compact-state.json", import.meta.url)
 let compactStateLoaded = false
@@ -327,6 +336,9 @@ function applyCompactState(raw: string): void {
     branchLevelIndex.clear()
     for (const [key, value] of Object.entries(parsed?.path ?? {})) if (Number.isFinite(value)) pathLevelIndex.set(key, Number(value))
     for (const [key, value] of Object.entries(parsed?.branch ?? {})) if (Number.isFinite(value)) branchLevelIndex.set(key, Number(value))
+    for (const [key, value] of Object.entries(parsed?.diff ?? {})) {
+      if (value === "working" || value === "feature") diffScopeIndex.set(key, value)
+    }
     setCompactTick((t) => t + 1)
   } catch {
     // arquivo sendo escrito por outra instância; o próximo evento tenta de novo
@@ -350,7 +362,11 @@ function saveCompactState(): void {
   if (CONFIG.compact.persist !== "file") return
   try {
     const text = JSON.stringify(
-      { path: Object.fromEntries(pathLevelIndex), branch: Object.fromEntries(branchLevelIndex) },
+      {
+        path: Object.fromEntries(pathLevelIndex),
+        branch: Object.fromEntries(branchLevelIndex),
+        diff: Object.fromEntries(diffScopeIndex),
+      },
       null,
       2,
     )
@@ -541,10 +557,16 @@ function copyText(text: string): void {
   }
 }
 
-function cycleFromKey(kind: "path" | "branch"): void {
+function cycleFromKey(kind: "path" | "branch" | "diff"): void {
   if (!lastDir) return
   if (kind === "path") {
     cycleLevel(pathLevelIndex, lastDir, pathLevelsFor(lastDir, lastDisplayPath || lastDir), 1)
+  } else if (kind === "diff") {
+    loadCompactState()
+    const next = (diffScopeIndex.get(lastDir) ?? CONFIG.diff.defaultScope) === "feature" ? "working" : "feature"
+    diffScopeIndex.set(lastDir, next)
+    saveCompactState()
+    setCompactTick((t) => t + 1)
   } else if (lastBranch) {
     cycleLevel(branchLevelIndex, lastBranch, branchLevelsFor(lastBranch), 1)
   }
@@ -616,32 +638,72 @@ async function consoleModelCost(m: any): Promise<number | null> {
 // ---------------------------------------------------------------- diff via git
 // A API do host roda `git ... -c core.autocrlf=false`, o que infla as contagens em
 // worktrees CRLF no Windows (cada linha "muda"); o git direto respeita a config do repo.
-function gitNumstat(dir: string): Promise<{ add: number; del: number } | null> {
+function runGit(dir: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       execFile(
         "git",
-        ["diff", "--no-ext-diff", "--no-renames", "--numstat", "HEAD", "--", "."],
+        args,
         { cwd: dir, timeout: 12_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
         (err, stdout) => {
           if (err) return resolve(null)
-          let add = 0
-          let del = 0
-          for (const line of String(stdout).split(/\r?\n/)) {
-            if (!line) continue
-            const [a, d] = line.split("\t")
-            const an = a === "-" ? 0 : Number.parseInt(a ?? "", 10)
-            const dn = d === "-" ? 0 : Number.parseInt(d ?? "", 10)
-            if (Number.isFinite(an)) add += an
-            if (Number.isFinite(dn)) del += dn
-          }
-          resolve({ add, del })
+          resolve(String(stdout))
         },
       )
     } catch {
       resolve(null)
     }
   })
+}
+
+function parseNumstat(out: string): { add: number; del: number } {
+  let add = 0
+  let del = 0
+  for (const line of out.split(/\r?\n/)) {
+    if (!line) continue
+    const [a, d] = line.split("\t")
+    const an = a === "-" ? 0 : Number.parseInt(a ?? "", 10)
+    const dn = d === "-" ? 0 : Number.parseInt(d ?? "", 10)
+    if (Number.isFinite(an)) add += an
+    if (Number.isFinite(dn)) del += dn
+  }
+  return { add, del }
+}
+
+function gitNumstat(dir: string, ref = "HEAD"): Promise<{ add: number; del: number } | null> {
+  return runGit(dir, ["diff", "--no-ext-diff", "--no-renames", "--numstat", ref, "--", "."]).then((out) =>
+    out === null ? null : parseNumstat(out),
+  )
+}
+
+// Base da feature: merge-base com a branch padrão (origin/HEAD, senão main/master/develop).
+async function gitBaseCommit(dir: string): Promise<string | null> {
+  let base: string | null = null
+  const headRef = await runGit(dir, ["symbolic-ref", "refs/remotes/origin/HEAD"])
+  const m = headRef?.trim().match(/^refs\/remotes\/origin\/(.+)$/)
+  if (m) base = m[1]
+  if (!base) {
+    for (const candidate of ["main", "master", "develop"]) {
+      const ok = await runGit(dir, ["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`])
+      if (ok !== null) {
+        base = candidate
+        break
+      }
+    }
+  }
+  if (!base) return null
+  const sha = ((await runGit(dir, ["merge-base", "HEAD", base])) ?? "").trim()
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null
+}
+
+// Feature inteira: do merge-base até a working tree (commits da branch + não commitado).
+async function gitFeatureTotals(dir: string): Promise<{ add: number; del: number } | null> {
+  const base = await gitBaseCommit(dir)
+  if (!base) return null
+  const tracked = await gitNumstat(dir, base)
+  if (!tracked) return null
+  const untracked = await gitUntrackedLines(dir)
+  return { add: tracked.add + untracked, del: tracked.del }
 }
 
 function gitUntrackedLines(dir: string): Promise<number> {
@@ -689,7 +751,7 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
 
   const muted = pick(theme, "text.muted", "#8f8f8f")
   const bright = pick(theme, "text.default", pick(theme, "text.primary", pick(theme, "text.normal", "#d0d0d0")))
-  const [hover, setHover] = createSignal<"path" | "branch" | null>(null)
+  const [hover, setHover] = createSignal<"path" | "branch" | "diff" | null>(null)
 
   const [official, setOfficial] = createSignal<OfficialUsage | null>(null)
   const [meters, setMeters] = createSignal<any[]>([])
@@ -795,6 +857,12 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
   async function computeDiff(): Promise<{ add: number; del: number } | null> {
     const dir = location()?.directory
     if (!dir) return null
+    const scope = diffScopeIndex.get(dir) ?? CONFIG.diff.defaultScope
+    // Feature inteira (merge-base -> working tree), quando selecionada no clique.
+    if (scope === "feature") {
+      const feat = await deadline(gitFeatureTotals(dir), 20_000)
+      if (feat) return feat
+    }
     // 1) git direto: respeita a config do repo (a API do host força core.autocrlf=false
     //    e infla as contagens em worktrees CRLF no Windows — bug upstream).
     const viaGit = await deadline(gitDiffTotals(dir), 15_000)
@@ -971,28 +1039,62 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     else cycleLevel(branchLevelIndex, b, levels, 1)
   }
 
-  const rightText = createMemo(() => {
-    const parts: string[] = []
-    if (CONFIG.show.context && context()) {
-      const c = context()!
-      parts.push(`${fmtTokens(c.tokens)}${c.pct !== undefined ? ` (${c.pct}%)` : ""}`)
-    }
-    if (CONFIG.show.diff && diff()) parts.push(`(+${diff()!.add} -${diff()!.del})`)
-    if (CONFIG.show.cost) {
-      let cost = 0
-      try {
-        // data.session.cost soma a família toda (sessão + subagentes) quando é a raiz
-        cost = ctx.data.session.cost(props.sessionID) ?? 0
-      } catch {
-        cost = session()?.cost ?? 0
-      }
-      parts.push(`$${cost.toFixed(2)}`)
-    }
-    return parts.join("  ")
+  // ---------------------------------------------------------------- diff scope (clique)
+  const diffScope = createMemo(() => {
+    compactTick()
+    const dir = dirKey()
+    if (!dir) return CONFIG.diff.defaultScope
+    return diffScopeIndex.get(dir) ?? CONFIG.diff.defaultScope
   })
 
+  function toggleDiffScope(dir: string): void {
+    if (!dir) return
+    loadCompactState()
+    const next = (diffScopeIndex.get(dir) ?? CONFIG.diff.defaultScope) === "feature" ? "working" : "feature"
+    diffScopeIndex.set(dir, next)
+    saveCompactState()
+    setCompactTick((t) => t + 1)
+    void refresh(true)
+  }
+
+  function clickDiff(e: any) {
+    if (!isLeftClick(e)) return
+    e?.stopPropagation?.()
+    const dir = dirKey()
+    if (!dir) return
+    if (e?.modifiers?.shift && CONFIG.compact.copy && diffText()) copyText(diffText()!)
+    else toggleDiffScope(dir)
+  }
+
+  const contextText = createMemo(() => {
+    if (!CONFIG.show.context || !context()) return null
+    const c = context()!
+    return `${fmtTokens(c.tokens)}${c.pct !== undefined ? ` (${c.pct}%)` : ""}`
+  })
+
+  const diffText = createMemo(() => {
+    if (!CONFIG.show.diff || !diff()) return null
+    const d = diff()!
+    const marker = diffScope() === "feature" && CONFIG.diff.marker ? ` ${CONFIG.diff.marker}` : ""
+    return `(+${d.add} -${d.del}${marker})`
+  })
+
+  const costText = createMemo(() => {
+    if (!CONFIG.show.cost) return null
+    let cost = 0
+    try {
+      // data.session.cost soma a família toda (sessão + subagentes) quando é a raiz
+      cost = ctx.data.session.cost(props.sessionID) ?? 0
+    } catch {
+      cost = session()?.cost ?? 0
+    }
+    return `$${cost.toFixed(2)}`
+  })
+
+  const hot = (kind: "path" | "branch" | "diff") =>
+    CONFIG.compact.hover && hover() === kind ? bright : muted
+
   if (part === "plan") {
-    const hot = (kind: "path" | "branch") => (CONFIG.compact.hover && hover() === kind ? bright : muted)
     return (
       <ErrorBoundary fallback={<text fg={muted} />}>
         <box flexDirection="row">
@@ -1026,7 +1128,21 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
 
   return (
     <ErrorBoundary fallback={<text fg={muted} />}>
-      <text fg={muted}>{rightText()}</text>
+      <box flexDirection="row">
+        {contextText() ? <text fg={muted}>{contextText()}</text> : null}
+        {contextText() && diffText() ? <text fg={muted}>{"  "}</text> : null}
+        {diffText() ? (
+          <box
+            onMouseOver={() => CONFIG.compact.hover && setHover("diff")}
+            onMouseOut={() => hover() === "diff" && setHover(null)}
+            onMouseUp={clickDiff}
+          >
+            <text fg={hot("diff")}>{diffText()}</text>
+          </box>
+        ) : null}
+        {(contextText() || diffText()) && costText() ? <text fg={muted}>{"  "}</text> : null}
+        {costText() ? <text fg={muted}>{costText()}</text> : null}
+      </box>
     </ErrorBoundary>
   )
 }
@@ -1088,6 +1204,17 @@ export default Plugin.define({
                   group: "usage-bar",
                   bind: keys.branch,
                   run: () => cycleFromKey("branch"),
+                },
+              ]
+            : []),
+          ...(keys.diff
+            ? [
+                {
+                  id: "usage-bar.diff.scope",
+                  title: "usage-bar: diff working/feature",
+                  group: "usage-bar",
+                  bind: keys.diff,
+                  run: () => cycleFromKey("diff"),
                 },
               ]
             : []),
