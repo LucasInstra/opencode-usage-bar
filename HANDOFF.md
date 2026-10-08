@@ -186,5 +186,6 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 - Implementação: `gitBaseCommit` (origin/HEAD, senão main/master/develop → `merge-base HEAD <base>`), `gitFeatureTotals` (numstat a partir do merge-base + untracked), escopo por pasta com persistência no `compact-state.json` (sincroniza entre abas como o resto), marcador `≡` no modo feature (`diff.marker`, vazio desliga), keybind `alt+d`.
 - Fallbacks: sem base/sem git → volta para working (git direto, depois API do host).
 - Config nova: `diff: { defaultScope: "working", marker: "≡" }`.
+- Untracked conta só texto: arquivos com byte NUL (binários como `.png`) são pulados, senão bytes `0x0A` no meio do binário viram linhas fantasmas.
 
 _Atualizado em 06/10/2026 (6ª sessão): toggle working/feature no diff + docs. Notas anteriores mantidas._

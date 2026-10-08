@@ -719,11 +719,15 @@ function gitUntrackedLines(dir: string): Promise<number> {
           for (const file of String(stdout).split("\0")) {
             if (!file) continue
             try {
-              const text = readFileSync(join(dir, file), "utf8")
-              if (!text) continue
+              const buf: Buffer = readFileSync(join(dir, file))
+              if (!buf.length) continue
+              // binário (heurística do git: NUL no começo) → ignora, senão bytes
+              // 0x0A no meio do binário viram "linhas" fantasmas
+              if (buf.subarray(0, 8000).includes(0)) continue
+              const text = buf.toString("utf8")
               lines += text.split("\n").length - (text.endsWith("\n") ? 1 : 0)
             } catch {
-              // binário/ilegível: ignora
+              // ilegível: ignora
             }
           }
           resolve(lines)
