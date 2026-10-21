@@ -62,6 +62,19 @@ The official percentage needs a key. Resolution order:
 
 Without any of them the bar still works with the local estimate (`~NN%`).
 
+## Model limits
+
+The percentage in the bar is the official API value, so it needs no local data. The local estimate (`source: local`, or the value shown in the error dialog) divides the model cost by that model's monthly limit, which the API does not expose: `/inference/go/v1/models` returns only model ids and the Console usage endpoints return cost.
+
+The limits live in `GO_LIMITS` / `GO_PLUS_LIMITS` in `tui.tsx` and mirror the table in <https://opencode.ai/docs/go>. To refresh them:
+
+```sh
+bun run scripts/sync-limits.ts          # update tui.tsx from the docs
+bun run scripts/sync-limits.ts --check  # exit 1 when out of date (CI)
+```
+
+The script matches docs labels to real model ids from the Go models endpoint, keeps entries for models no longer in the docs, and lists models with no published limit (their local estimate is unavailable).
+
 ## Click to compact
 
 Click the folder or the branch label to cycle through shorter forms; each click goes one level deeper and wraps around:

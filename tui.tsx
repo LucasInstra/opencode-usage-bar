@@ -11,34 +11,27 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 // ---------------------------------------------------------------- limit tables
-// Limites mensais (US$) por modelo — usados só no fallback (console/local).
+// Monthly limits (US$) per model, used only by the local estimate (console/local).
+// Mirrors https://opencode.ai/docs/go; refresh with scripts/sync-limits.ts.
 const GO_LIMITS: Record<string, number> = {
-  "glm-5.3-flash": 60, "glm-5.3": 15, "glm-5.2": 60,
-  "kimi-k3": 15, "kimi-k2.7-code": 60, "kimi-k2.6": 60,
-  "longcat-2.0": 60,
-  "mimo-v2.6-flash": 60, "mimo-v2.6-pro": 15, "mimo-v2.5": 60, "mimo-v2.5-pro": 15,
-  "minimax-m3": 60, "minimax-m2.7": 60,
-  "muse-spark-1.3-contributor": 60, "muse-spark-1.2-contributor": 60,
-  "qwen3.8-max": 15, "qwen3.8-flash": 30, "qwen3.7-plus": 60,
-  "deepseek-v4.1-flash": 60, "deepseek-v4-pro": 15, "deepseek-v4-flash": 30,
-  "deepseek-v4-flash-vision-exp": 15,
-  "hy4-preview": 30, "hy3": 60,
-  "grok-4.7": 15, "grok-4.6": 15,
-  "gpt-6-luna": 15, "gpt-5.6-luna": 15,
+  "glm-5.3-flash": 60, "glm-5.3": 15, "glm-5.2": 60, "kimi-k3": 15,
+  "kimi-k2.7-code": 60, "kimi-k2.6": 60, "longcat-2.0": 60, "mimo-v2.6-flash": 60,
+  "mimo-v2.6-pro": 15, "mimo-v2.5": 60, "mimo-v2.5-pro": 15, "minimax-m3": 60,
+  "minimax-m2.7": 60, "muse-spark-1.3-contributor": 60, "muse-spark-1.2-contributor": 60, "qwen3.8-max": 15,
+  "qwen3.8-flash": 30, "qwen3.7-plus": 60, "deepseek-v4.1-flash": 80, "deepseek-v4-pro": 15,
+  "deepseek-v4-flash": 30, "deepseek-v4-flash-vision-exp": 15, "hy4-preview": 30, "hy3": 60,
+  "grok-4.7": 15, "grok-4.6": 15, "gpt-6-luna": 15, "gpt-5.6-luna": 15,
+  "step-5-preview": 15, "claude-haiku-5-5": 15, "gemini-4-argon-contributor": 60,
 }
 const GO_PLUS_LIMITS: Record<string, number> = {
-  "glm-5.3-flash": 180, "glm-5.3": 120, "glm-5.2": 180,
-  "kimi-k3": 60, "kimi-k2.7-code": 180, "kimi-k2.6": 240,
-  "longcat-2.0": 240,
-  "mimo-v2.6-flash": 120, "mimo-v2.6-pro": 60, "mimo-v2.5": 120, "mimo-v2.5-pro": 60,
-  "minimax-m3": 180, "minimax-m2.7": 240,
-  "muse-spark-1.3-contributor": 120, "muse-spark-1.2-contributor": 120,
-  "qwen3.8-max": 60, "qwen3.8-flash": 90, "qwen3.7-plus": 180,
-  "deepseek-v4.1-flash": 120, "deepseek-v4-pro": 60, "deepseek-v4-flash": 120,
-  "deepseek-v4-flash-vision-exp": 60,
-  "hy4-preview": 120, "hy3": 240,
-  "grok-4.7": 60, "grok-4.6": 60,
-  "gpt-6-luna": 60, "gpt-5.6-luna": 60,
+  "glm-5.3-flash": 180, "glm-5.3": 120, "glm-5.2": 180, "kimi-k3": 60,
+  "kimi-k2.7-code": 180, "kimi-k2.6": 240, "longcat-2.0": 240, "mimo-v2.6-flash": 120,
+  "mimo-v2.6-pro": 60, "mimo-v2.5": 120, "mimo-v2.5-pro": 60, "minimax-m3": 180,
+  "minimax-m2.7": 240, "muse-spark-1.3-contributor": 120, "muse-spark-1.2-contributor": 120, "qwen3.8-max": 60,
+  "qwen3.8-flash": 90, "qwen3.7-plus": 180, "deepseek-v4.1-flash": 160, "deepseek-v4-pro": 60,
+  "deepseek-v4-flash": 120, "deepseek-v4-flash-vision-exp": 60, "hy4-preview": 120, "hy3": 240,
+  "grok-4.7": 60, "grok-4.6": 60, "gpt-6-luna": 60, "gpt-5.6-luna": 60,
+  "step-5-preview": 60, "claude-haiku-5-5": 60, "gemini-4-argon-contributor": 240,
 }
 
 // ---------------------------------------------------------------- config
