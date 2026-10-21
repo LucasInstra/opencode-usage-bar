@@ -211,6 +211,30 @@ const CONSOLE_KEY_ENV = "USAGE_BAR_CONSOLE_KEY"
 // 2. arquivo console.key ao lado do plugin
 // 3. auth.json do próprio opencode (provider "opencode-go"), já presente quando
 //    a máquina está logada no plano Go — não exige console.key.
+function authJsonPaths(): string[] {
+  const dataDirs: string[] = []
+  const xdg = (process.env.XDG_DATA_HOME ?? "").trim()
+  if (xdg) dataDirs.push(xdg)
+  try {
+    dataDirs.push(join(homedir(), ".local", "share"))
+  } catch {
+    // sem homedir
+  }
+  return dataDirs.map((base) => join(base, "opencode", "auth.json"))
+}
+
+function readAuthKey(path: string): string {
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8"))
+    const entry = raw?.["opencode-go"] ?? raw?.["opencode"]
+    const key = entry?.key
+    if (typeof key === "string" && key.trim()) return key.trim()
+  } catch {
+    // sem auth.json nesse diretório
+  }
+  return ""
+}
+
 function resolveConsoleKey(): string {
   const fromEnv = (process.env[CONSOLE_KEY_ENV] ?? "").trim()
   if (fromEnv) return fromEnv
@@ -220,25 +244,25 @@ function resolveConsoleKey(): string {
   } catch {
     // sem console.key
   }
-  const dataDirs: string[] = []
-  const xdg = (process.env.XDG_DATA_HOME ?? "").trim()
-  if (xdg) dataDirs.push(xdg)
-  try {
-    dataDirs.push(join(homedir(), ".local", "share"))
-  } catch {
-    // sem homedir
-  }
-  for (const base of dataDirs) {
-    try {
-      const raw = JSON.parse(readFileSync(join(base, "opencode", "auth.json"), "utf8"))
-      const entry = raw?.["opencode-go"] ?? raw?.["opencode"]
-      const key = entry?.key
-      if (typeof key === "string" && key.trim()) return key.trim()
-    } catch {
-      // sem auth.json nesse diretório
-    }
+  for (const path of authJsonPaths()) {
+    const key = readAuthKey(path)
+    if (key) return key
   }
   return ""
+}
+
+// Where the credential in use came from, only to explain the failure in the alert.
+function consoleKeySource(): string {
+  if ((process.env[CONSOLE_KEY_ENV] ?? "").trim()) return `env ${CONSOLE_KEY_ENV}`
+  try {
+    if (readFileSync(new URL("./console.key", import.meta.url), "utf8").trim()) return "console.key file"
+  } catch {
+    // sem console.key
+  }
+  for (const path of authJsonPaths()) {
+    if (readAuthKey(path)) return "auth.json (opencode-go)"
+  }
+  return "none"
 }
 
 let consoleKey = resolveConsoleKey()
@@ -575,8 +599,10 @@ function cycleFromKey(kind: "path" | "branch" | "diff"): void {
 loadCompactState()
 startCompactWatch()
 
-// GET JSON com timeout/abort; null em qualquer falha (rede, status, parse).
-async function getJson(url: string, timeoutMs = 10_000): Promise<any | null> {
+// GET with timeout/abort. Returns the failure reason for the clickable warning in the bar.
+type JsonResult = { ok: true; data: any } | { ok: false; status?: number; reason: string }
+
+async function getJson(url: string, timeoutMs = 10_000): Promise<JsonResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -584,10 +610,29 @@ async function getJson(url: string, timeoutMs = 10_000): Promise<any | null> {
       headers: { Authorization: `Bearer ${getConsoleKey()}`, Accept: "application/json" },
       signal: controller.signal,
     })
-    if (!res.ok) return null
-    return await res.json()
-  } catch {
-    return null
+    const text = await res.text()
+    if (!res.ok) {
+      let reason = `HTTP ${res.status}`
+      try {
+        const body = JSON.parse(text)
+        const code = body?.error?.code
+        const message = body?.error?.message
+        if (code || message) reason = [code, message].filter(Boolean).join(": ")
+      } catch {
+        // body is not JSON; keep only the status
+      }
+      return { ok: false, status: res.status, reason: reason.slice(0, 240) }
+    }
+    try {
+      return { ok: true, data: JSON.parse(text) }
+    } catch {
+      return { ok: false, status: res.status, reason: "response is not JSON" }
+    }
+  } catch (e: any) {
+    const reason = controller.signal.aborted
+      ? `timed out (${Math.round(timeoutMs / 1000)}s)`
+      : `network error: ${e?.message ?? String(e)}`
+    return { ok: false, reason: reason.slice(0, 240) }
   } finally {
     clearTimeout(timer)
   }
@@ -612,21 +657,27 @@ function deadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
 
 // uso OFICIAL do plano Go (rolling/semanal/mensal), direto da API da Go
 type OfficialUsage = { percent: number; resetsAt: number | null }
-async function fetchOfficialUsage(): Promise<OfficialUsage | null> {
-  if (!getConsoleKey()) return null
-  const data = await getJson("https://opencode.ai/zen/go/v1/usage")
-  const monthly = data?.usage?.monthly
-  if (!monthly || typeof monthly.percent !== "number" || !Number.isFinite(monthly.percent)) return null
+type OfficialFailure = { reason: string; status?: number; noKey?: boolean }
+async function fetchOfficialUsage(): Promise<{ ok: true; usage: OfficialUsage } | ({ ok: false } & OfficialFailure)> {
+  if (!getConsoleKey()) {
+    return { ok: false, noKey: true, reason: `no credential (env ${CONSOLE_KEY_ENV}, console.key or auth.json)` }
+  }
+  const r = await getJson("https://opencode.ai/zen/go/v1/usage")
+  if (!r.ok) return { ok: false, reason: r.reason, status: r.status }
+  const monthly = r.data?.usage?.monthly
+  if (!monthly || typeof monthly.percent !== "number" || !Number.isFinite(monthly.percent)) {
+    return { ok: false, reason: "response has no usage.monthly.percent" }
+  }
   const parsed = monthly.resetsAt ? Date.parse(monthly.resetsAt) : NaN
-  return { percent: monthly.percent, resetsAt: Number.isFinite(parsed) ? parsed : null }
+  return { ok: true, usage: { percent: monthly.percent, resetsAt: Number.isFinite(parsed) ? parsed : null } }
 }
 
 // custo do modelo via API do Console (fallback account-wide)
 async function consoleModelCost(m: any): Promise<number | null> {
   if (!getConsoleKey()) return null
-  const data = await getJson(`${CONSOLE_BASE}/api/usage/models?range=${encodeURIComponent(CONFIG.consoleRange)}`, 15_000)
-  if (data === null) return null
-  const items = Array.isArray(data?.items) ? data.items : []
+  const r = await getJson(`${CONSOLE_BASE}/api/usage/models?range=${encodeURIComponent(CONFIG.consoleRange)}`, 15_000)
+  if (!r.ok) return null
+  const items = Array.isArray(r.data?.items) ? r.data.items : []
   const hit = items.find(
     (it: any) =>
       it.provider === m.providerID &&
@@ -755,9 +806,12 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
 
   const muted = pick(theme, "text.muted", "#8f8f8f")
   const bright = pick(theme, "text.default", pick(theme, "text.primary", pick(theme, "text.normal", "#d0d0d0")))
-  const [hover, setHover] = createSignal<"path" | "branch" | "diff" | null>(null)
+  const danger = pick(theme, "error", "#f38b8b")
+  const [hover, setHover] = createSignal<"path" | "branch" | "diff" | "plan" | null>(null)
 
   const [official, setOfficial] = createSignal<OfficialUsage | null>(null)
+  const [officialError, setOfficialError] = createSignal<{ failure: OfficialFailure; at: number } | null>(null)
+  const [lastGood, setLastGood] = createSignal<{ percent: number; at: number } | null>(null)
   const [meters, setMeters] = createSignal<any[]>([])
   const [diff, setDiff] = createSignal<{ add: number; del: number } | null>(null)
   const [now, setNow] = createSignal(Date.now())
@@ -913,17 +967,21 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
         let officialOk = false
         // O % oficial é do plano inteiro: busca sempre, mesmo sem modelo selecionado.
         if (CONFIG.source === "official" || CONFIG.source === "auto") {
-          const o = await fetchOfficialUsage()
+          const r = await fetchOfficialUsage()
           if (gen !== generation) return
-          if (o) {
+          if (r.ok) {
             officialOk = true
-            setOfficial(o)
+            setOfficial(r.usage)
+            setOfficialError(null)
+            setLastGood({ percent: r.usage.percent, at: Date.now() })
             setMeters([])
           } else {
             setOfficial(null)
+            setOfficialError({ failure: { reason: r.reason, status: r.status, noKey: r.noKey }, at: Date.now() })
           }
         } else {
           setOfficial(null)
+          setOfficialError(null)
         }
 
         const fallbackAllowed = !officialOk && CONFIG.source !== "official"
@@ -999,13 +1057,25 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     return branchLevelText(currentLevel(branchLevelIndex, b, levels), b)
   })
 
+  // Official fetch failed (source auto/official): the number becomes a clickable "!".
+  // No credential at all is not a failure: keep the documented fallback (~NN%).
+  const planFailed = createMemo(
+    () =>
+      !official() &&
+      officialError() !== null &&
+      !officialError()!.failure.noKey &&
+      (CONFIG.source === "auto" || CONFIG.source === "official"),
+  )
+
   const planText = createMemo(() => {
+    if (!CONFIG.show.plan) return null
     const o = official()
-    const rawPct = o ? o.percent : planPct()
-    const pct = rawPct === null ? null : Math.max(0, rawPct + (CONFIG.percentBias || 0))
+    if (o) return `${Math.max(0, o.percent + (CONFIG.percentBias || 0))}%`
+    if (planFailed()) return "!"
+    const p = planPct()
+    if (p === null) return null
     // Sem dado oficial, o percentual vem do fallback (aproximado): marca com "~".
-    if (!CONFIG.show.plan || pct === null) return null
-    return o ? `${pct}%` : `~${pct}%`
+    return `~${Math.max(0, p + (CONFIG.percentBias || 0))}%`
   })
 
   const resetText = createMemo(() => {
@@ -1070,6 +1140,37 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     else toggleDiffScope(dir)
   }
 
+  // Click on "!": explains why the official % stopped updating.
+  function clickPlanError(e: any) {
+    if (!isLeftClick(e)) return
+    e?.stopPropagation?.()
+    const err = officialError()
+    if (!err) return
+    const bias = CONFIG.percentBias || 0
+    const lines = [`Reason: ${err.failure.reason}`]
+    if (err.failure.status) lines.push(`HTTP: ${err.failure.status}`)
+    lines.push(`Credential: ${consoleKeySource()}`)
+    lines.push(`Failed at: ${new Date(err.at).toLocaleTimeString()}`)
+    const good = lastGood()
+    lines.push(
+      good
+        ? `Last official value: ${Math.max(0, good.percent + bias)}% (${new Date(good.at).toLocaleTimeString()})`
+        : "Last official value: none since the plugin loaded",
+    )
+    const local = planPct()
+    if (local !== null) lines.push(`Local estimate: ~${Math.max(0, local + bias)}%`)
+    lines.push("")
+    lines.push(
+      "Fix: create a new API key in OpenCode Console and update the credential (env USAGE_BAR_CONSOLE_KEY, console.key or auth.json).",
+    )
+    const message = lines.join("\n")
+    try {
+      void ctx.ui.dialog.alert({ title: "usage-bar: plan % unavailable", message })
+    } catch {
+      ctx.ui.toast.show({ message, variant: "error" })
+    }
+  }
+
   const contextText = createMemo(() => {
     if (!CONFIG.show.context || !context()) return null
     const c = context()!
@@ -1122,7 +1223,19 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
             </box>
           ) : null}
           {(pathText() || branchText()) && planText() ? <text fg={muted}>{"  "}</text> : null}
-          {planText() ? <text fg={muted}>{planText()}</text> : null}
+          {planText() ? (
+            planFailed() ? (
+              <box
+                onMouseOver={() => CONFIG.compact.hover && setHover("plan")}
+                onMouseOut={() => hover() === "plan" && setHover(null)}
+                onMouseUp={clickPlanError}
+              >
+                <text fg={hover() === "plan" && CONFIG.compact.hover ? bright : danger}>{planText()}</text>
+              </box>
+            ) : (
+              <text fg={muted}>{planText()}</text>
+            )
+          ) : null}
           {resetText() ? <text fg={muted}>{"  "}</text> : null}
           {resetText() ? <text fg={muted}>{resetText()}</text> : null}
         </box>

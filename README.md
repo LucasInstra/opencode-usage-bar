@@ -28,6 +28,7 @@ The "how much of my plan did I burn?" number lives on the website, and the defau
 | Right | Session cost | summed across the session family (session + subagents) |
 
 - No key configured? The percentage falls back to a local estimate and is marked `~86%`.
+- If the official fetch fails while `source` is `auto` or `official`, the number is replaced by a red `!`. Click it for the reason (HTTP status, API error code/message), the credential in use, the last good value and when it was fetched, plus the local estimate.
 - The site **rounds** while the API **truncates**; `percentBias: 1` compensates so the bar matches the site.
 - The bar hides the native `folder:branch` text some hosts still render inside the footer.
 

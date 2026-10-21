@@ -189,3 +189,19 @@ Get-Content 'C:\Users\Lucas\.local\share\opencode\log\opencode.log' -Tail 100 | 
 - Untracked conta só texto: arquivos com byte NUL (binários como `.png`) são pulados, senão bytes `0x0A` no meio do binário viram linhas fantasmas.
 
 _Atualizado em 06/10/2026 (6ª sessão): toggle working/feature no diff + docs. Notas anteriores mantidas._
+
+---
+
+## 14. Sessão 21/10/2026 - erro clicável quando o % oficial falha
+
+- Sintoma: a chave `opencode-go` do `auth.json` do trabalho expirou (`401 api_key_expired`) e o número do plano parou de atualizar sem aviso, caindo no fallback local silencioso.
+- Correção imediata da máquina: copiado o `console.key` válido da casa para `~/.config/opencode/plugins/opencode-usage-bar/console.key` (gitignored).
+- Mudança no plugin:
+  - `getJson` agora devolve `{ ok, data } | { ok: false, status?, reason }` em vez de `null`; `fetchOfficialUsage` propaga motivo e status (inclui `error.code`/`error.message` do corpo da API).
+  - Estado novo no componente: `officialError` (motivo, status, hora) e `lastGood` (último % oficial + hora).
+  - Com `source: auto` ou `official`, falha na busca troca o número por um `!` vermelho (token `error` do tema). Clique abre `ctx.ui.dialog.alert` com motivo, HTTP, credencial em uso (`consoleKeySource()`: env / console.key / auth.json), hora da falha, último valor bom e estimativa local.
+  - `source: local` ou `console` continua mostrando o fallback `~NN%` (não houve busca oficial).
+- Validação: `bun build tui.tsx --outfile ... --external solid-js --external "@opentui/solid" --external "@opencode/plugin/tui"` (53 KB, ok). Sem commit.
+- Para surgir na TUI: reiniciar o opencode (plugin carrega no start).
+
+_Atualizado em 21/10/2026._
