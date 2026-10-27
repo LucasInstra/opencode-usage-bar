@@ -946,121 +946,165 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     }
   }
 
-  // Varre a janela de mensagens (a API devolve no máximo ~50 por sessão) e devolve
-  // o custo já precificado passo a passo, os tokens vistos e o modelo mais antigo
-  // visível — que é a melhor pista do modelo usado nos passos fora da janela.
+  // A API entrega ~50 mensagens por chamada. Quando essa janela não cobre a
+  // sessão, buscamos mais histórico (uma vez por minuto) para achar a fronteira
+  // de preço e reduzir o trecho estimado. Falha silenciosa: segue com a janela.
+  const [history, setHistory] = createSignal<any[] | null>(null)
+  let historyAt = 0
+
+  async function ensureHistory(): Promise<void> {
+    if (typeof (client as any)?.message?.list !== "function") return
+    const now = Date.now()
+    if (now - historyAt < 60_000) return
+    historyAt = now
+    try {
+      const res: any = await deadline(
+        Promise.resolve((client as any).message.list({ sessionID: props.sessionID, limit: 200, order: "desc", type: "assistant" })),
+        15_000,
+      )
+      const rows = res?.data ?? res?.messages ?? null
+      if (Array.isArray(rows) && rows.length > 0) setHistory([...rows].reverse())
+    } catch {
+      // sem histórico extra: segue com a janela do host
+    }
+  }
+
+  // Mensagens por sessão da família. A raiz usa o histórico extra quando existe
+  // (mais passos = menos trecho estimado).
+  function familyLists(): Array<{ id: string; msgs: any[] }> {
+    const hist = history()
+    return familyIDs().map((id) => {
+      if (hist && id === props.sessionID) return { id, msgs: hist }
+      try {
+        return { id, msgs: ctx.data.session.message.list(id) ?? [] }
+      } catch {
+        return { id, msgs: [] }
+      }
+    })
+  }
+
+  // Varre as mensagens visíveis e devolve o custo já precificado passo a passo,
+  // os tokens vistos, o modelo mais antigo (pista do trecho escondido), o uso por
+  // modelo (para ratear o resto) e se algum modelo ficou sem preço no catálogo.
   function visibleMessages() {
     const models = availableModels()
     const seen = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+    const byModel = new Map<string, { tokens: number; info: any }>()
     let cost = 0
     let oldestModel: any = null
-    for (const id of familyIDs()) {
-      let msgs: any[] = []
-      try {
-        msgs = ctx.data.session.message.list(id) ?? []
-      } catch {
-        msgs = []
-      }
+    let unknown = false
+    for (const { msgs } of familyLists()) {
       for (const msg of msgs) {
         if (msg?.type !== "assistant" || !msg.tokens) continue
         const found = models.find((x: any) => sameModel(msg.model, x))
+        if (!found) unknown = true
         cost += pricedCost(msg.tokens, found)
         seen.input += msg.tokens.input ?? 0
         seen.output += msg.tokens.output ?? 0
         seen.reasoning += msg.tokens.reasoning ?? 0
         seen.cache.read += msg.tokens.cache?.read ?? 0
         seen.cache.write += msg.tokens.cache?.write ?? 0
-        if (!oldestModel) {
-          oldestModel = msg.model
-        }
+        const key = `${msg.model?.providerID}/${msg.model?.id}`
+        const bucket = byModel.get(key) ?? { tokens: 0, info: found }
+        bucket.tokens += totalTokens(msg.tokens)
+        byModel.set(key, bucket)
+        if (!oldestModel) oldestModel = msg.model
       }
     }
-    return { cost, seen, oldestModel }
+    return { cost, seen, oldestModel, byModel, unknown }
   }
 
   const totalTokens = (t: any) =>
     (t?.input ?? 0) + (t?.output ?? 0) + (t?.reasoning ?? 0) + (t?.cache?.read ?? 0) + (t?.cache?.write ?? 0)
 
   // A janela cobre a sessão inteira? Compara os tokens vistos com o agregado da
-  // sessão em vez de confiar no tamanho da lista (o teto é "até 50", não "50").
-  // Viu bem mais que o agregado = estado inconsistente (revert), então não vale.
+  // sessão. Só a falta de cobertura importa: se as mensagens somam mais que o
+  // agregado (agregado atrás do streaming, ou revert — que não estorna o gasto),
+  // a janela continua sendo a fonte mais fiel.
   function windowIsComplete(info: any, seen: any): boolean {
     const visible = totalTokens(seen)
     const aggregate = totalTokens(info?.tokens)
     if (aggregate <= 0) return visible <= 0
-    return visible >= aggregate * 0.99 && visible <= aggregate * 1.01
+    return visible >= aggregate * 0.97
   }
 
-  // Sessão inteira sem preço (Go): precifica passo a passo quando a janela cobre
-  // tudo — assim modelo grátis ou troca de modelo não distorcem. Se truncou,
-  // devolve null e cai no agregado.
-  function windowCost(): number | null {
-    const info = session()
-    if (!info?.tokens) return null
-    const { cost, seen } = visibleMessages()
-    return windowIsComplete(info, seen) ? cost : null
+  function scaleTokens(t: any, factor: number): any {
+    return {
+      input: (t.input ?? 0) * factor,
+      output: (t.output ?? 0) * factor,
+      reasoning: (t.reasoning ?? 0) * factor,
+      cache: { read: (t.cache?.read ?? 0) * factor, write: (t.cache?.write ?? 0) * factor },
+    }
   }
 
-  // Fallback quando a janela truncou: precifica a parte visível passo a passo (com
-  // faixa de preço por contexto) e o resto da sessão pela faixa base. O resto é o
-  // trecho mais antigo, então normalmente tem contexto menor que o atual.
-  function estimateCost(): number {
+  // Estimativa quando a janela não cobre a sessão: a parte visível já vem exata
+  // (passo a passo, com faixa de preço). O resto é rateado entre os modelos vistos
+  // na proporção dos tokens deles, cada um pela faixa base — melhor palpite para o
+  // trecho escondido do que assumir um único modelo.
+  function estimateFrom(cover: any): number {
     const info = session()
     if (!info?.tokens) return 0
     const models = availableModels()
-    const { cost: visible, seen, oldestModel } = visibleMessages()
     const aggregate = info.tokens
     const rest = {
-      input: Math.max(0, (aggregate.input ?? 0) - seen.input),
-      output: Math.max(0, (aggregate.output ?? 0) - seen.output),
-      reasoning: Math.max(0, (aggregate.reasoning ?? 0) - seen.reasoning),
+      input: Math.max(0, (aggregate.input ?? 0) - cover.seen.input),
+      output: Math.max(0, (aggregate.output ?? 0) - cover.seen.output),
+      reasoning: Math.max(0, (aggregate.reasoning ?? 0) - cover.seen.reasoning),
       cache: {
-        read: Math.max(0, (aggregate.cache?.read ?? 0) - seen.cache.read),
-        write: Math.max(0, (aggregate.cache?.write ?? 0) - seen.cache.write),
+        read: Math.max(0, (aggregate.cache?.read ?? 0) - cover.seen.cache.read),
+        write: Math.max(0, (aggregate.cache?.write ?? 0) - cover.seen.cache.write),
       },
     }
-    // Viu mais tokens do que o agregado = estado inconsistente (revert, fork ou
-    // família com semântica diferente). Aí o agregado é a fonte confiável.
-    const viuMais = seen.input > (aggregate.input ?? 0) || seen.cache.read > (aggregate.cache?.read ?? 0)
-    if (viuMais) {
-      const found = models.find((x: any) => sameModel(info.model ?? oldestModel ?? model(), x))
-      return pricedCost(aggregate, found, 0)
+    // Viu mais tokens do que o agregado? A janela já é a fonte mais fiel (o
+    // agregado pode estar atrás do streaming), então não há o que ratear.
+    if (totalTokens(cover.seen) >= totalTokens(aggregate) * 0.97) return cover.cost
+    let visited = 0
+    for (const bucket of cover.byModel.values()) visited += bucket.tokens
+    if (visited <= 0) {
+      const found = models.find((x: any) => sameModel(cover.oldestModel ?? info.model ?? model(), x))
+      return cover.cost + pricedCost(rest, found, 0)
     }
-    // O modelo do trecho escondido é mais parecido com o mais antigo visível do
-    // que com o modelo atual da sessão (que pode ter mudado no meio).
-    const found = models.find((x: any) => sameModel(oldestModel ?? info.model ?? model(), x))
-    return visible + pricedCost(rest, found, 0)
+    let restCost = 0
+    for (const bucket of cover.byModel.values()) {
+      restCost += pricedCost(scaleTokens(rest, bucket.tokens / visited), bucket.info, 0)
+    }
+    return cover.cost + restCost
   }
 
-  // Custo das mensagens mais recentes que ficaram sem preço (cost 0/ausente),
-  // andando de trás para frente até a primeira mensagem precificada. Cobre os
-  // subagentes e precifica cada passo pelo modelo que ele usou. É um piso: se a
-  // cauda passar da janela de ~50 mensagens da API, o excedente fica de fora.
-  function unpricedCost(): number {
+  // Custo da cauda sem preço: anda de trás para frente até a primeira mensagem
+  // precificada. `bounded` = achou a fronteira em toda sessão da família; se não,
+  // a cauda pode continuar fora do que a API entregou (valor é piso).
+  function unpriced(cover: any, complete: boolean) {
     const models = availableModels()
-    let total = 0
-    for (const id of familyIDs()) {
-      let msgs: any[] = []
-      try {
-        msgs = ctx.data.session.message.list(id) ?? []
-      } catch {
-        msgs = []
-      }
+    let cost = 0
+    let bounded = complete
+    let unknown = cover.unknown
+    for (const { msgs } of familyLists()) {
+      if (msgs.length === 0) continue
+      let found = false
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i]
         if (msg?.type !== "assistant") continue
         // precificação primeiro: uma mensagem com custo mas sem tokens (ex.:
         // compactação) também marca o fim da cauda sem preço.
-        if (typeof msg.cost === "number" && msg.cost > 0) break
+        if (typeof msg.cost === "number" && msg.cost > 0) {
+          found = true
+          break
+        }
         if (!msg.tokens) continue
-        const found = models.find((x: any) => sameModel(msg.model, x))
-        total += pricedCost(msg.tokens, found)
+        const found2 = models.find((x: any) => sameModel(msg.model, x))
+        if (!found2) unknown = true
+        cost += pricedCost(msg.tokens, found2)
       }
+      if (!found) bounded = false
     }
-    return total
+    return { cost, bounded, unknown }
   }
 
   const sessionCost = createMemo(() => {
+    const info = session()
+    const cover = visibleMessages()
+    const complete = windowIsComplete(info, cover.seen)
     let real: number | null = null
     try {
       const value = ctx.data.session.cost(props.sessionID)
@@ -1069,11 +1113,13 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
       real = null
     }
     // Nada gravado: o host não precifica sessões Go, então estima a sessão toda.
-    if (real === null) return { value: windowCost() ?? estimateCost(), estimated: true }
+    if (real === null) {
+      return { value: complete ? cover.cost : estimateFrom(cover), estimated: true, partial: false, unknown: cover.unknown }
+    }
     // Gravado: soma apenas a cauda que ficou sem preço.
-    const tail = unpricedCost()
-    if (tail <= 0) return { value: real, estimated: false }
-    return { value: real + tail, estimated: true }
+    const tail = unpriced(cover, complete)
+    if (tail.cost <= 0) return { value: real, estimated: false, partial: false, unknown: tail.unknown }
+    return { value: real + tail.cost, estimated: true, partial: !tail.bounded, unknown: tail.unknown }
   })
 
   async function statsFor(m: any, from: number, to: number): Promise<any | null> {
@@ -1152,6 +1198,9 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
       if (part === "rest") {
         const d = await computeDiff()
         if (gen === generation) setDiff(d)
+        // A janela do host não cobre a sessão? Busca mais histórico (com throttle)
+        // para reduzir o trecho estimado do custo.
+        if (!windowIsComplete(session(), visibleMessages().seen)) void ensureHistory()
       }
 
       if (part === "plan" && CONFIG.show.plan) {
@@ -1196,6 +1245,7 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
   // Escopo = sessão + pasta + modelo. Mudanças de custo/tokens durante o streaming
   // não invalidam a requisição em voo; trocas de escopo sim.
   let lastScope = ""
+  let lastSession = ""
   createEffect(() => {
     const m = model()
     session()
@@ -1204,6 +1254,12 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     if (changed) {
       lastScope = scope
       generation++
+    }
+    // histórico extra é por sessão: trocou de sessão, descarta o anterior
+    if (props.sessionID !== lastSession) {
+      lastSession = props.sessionID
+      setHistory(null)
+      historyAt = 0
     }
     void refresh(changed)
   })
@@ -1379,9 +1435,11 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     if (!CONFIG.show.cost) return null
     // Valor real gravado pelo host; em sessões Go ele é 0 (o gateway reporta 0
     // porque a assinatura cobre a requisição — #58562), então exibimos a
-    // estimativa pelo catálogo, marcada com "~".
+    // estimativa pelo catálogo, marcada com "~". "+" = piso (cauda maior que o
+    // histórico disponível), "*" = algum modelo sem preço no catálogo.
     const c = sessionCost()
-    return `${c.estimated ? "~" : ""}${fmtCost(c.value)}`
+    const suffix = `${c.partial ? "+" : ""}${c.unknown ? "*" : ""}`
+    return `${c.estimated ? "~" : ""}${fmtCost(c.value)}${suffix}`
   })
 
   const hot = (kind: "path" | "branch" | "diff") =>

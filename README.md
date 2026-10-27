@@ -134,7 +134,9 @@ Result: `[in.pulse-analytics] Fix flaky test`. Optional overrides live in `~/.co
 
 Since opencode 2.2.0 the host records the cost the gateway reports instead of pricing tokens from the catalog, and the gateway reports `0` for OpenCode Go because the request is covered by the subscription — so sessions show nothing. The bar then estimates: tokens × catalog price, always marked `~`.
 
-It prices **per step** whenever the message window covers the session (model switches, free models and context price tiers are honored), and per session aggregate when the window is truncated by the API (~50 messages). For sessions that crossed the 2.2.0 upgrade, only the unpriced tail is added on top of the recorded value, so old tokens are never repriced with today's table.
+It prices **per step** whenever the message window covers the session (model switches, free models and context price tiers are honored), and per session aggregate when the window is truncated by the API. When the window doesn't cover the session, the plugin asks for more history (200 messages, once a minute), and whatever is still missing is spread across the models seen, in proportion to their tokens. For sessions that crossed the 2.2.0 upgrade, only the unpriced tail is added on top of the recorded value, so old tokens are never repriced with today's table.
+
+Suffixes: `~` estimate, `+` value is a floor (the unpriced tail is longer than the history the API returns), `*` some model has no price in the catalog.
 
 Deep history, decisions and validation notes live in [HANDOFF.md](HANDOFF.md).
 

@@ -55,70 +55,99 @@ const totalTokens = (t) =>
 
 function visibleMessages(messages, models) {
   const seen = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+  const byModel = new Map()
   let cost = 0
   let oldestModel = null
+  let unknown = false
   for (const m of messages) {
     if (m?.type !== "assistant" || !m.tokens) continue
-    cost += pricedCost(m.tokens, findModel(models, m.model))
+    const found = findModel(models, m.model)
+    if (!found) unknown = true
+    cost += pricedCost(m.tokens, found)
     seen.input += m.tokens.input ?? 0
     seen.output += m.tokens.output ?? 0
     seen.reasoning += m.tokens.reasoning ?? 0
     seen.cache.read += m.tokens.cache?.read ?? 0
     seen.cache.write += m.tokens.cache?.write ?? 0
+    const key = `${m.model?.providerID}/${m.model?.id}`
+    const bucket = byModel.get(key) ?? { tokens: 0, info: found }
+    bucket.tokens += totalTokens(m.tokens)
+    byModel.set(key, bucket)
     if (!oldestModel) oldestModel = m.model
   }
-  return { cost, seen, oldestModel }
+  return { cost, seen, oldestModel, byModel, unknown }
 }
 
 function windowIsComplete(info, seen) {
   const visible = totalTokens(seen)
   const aggregate = totalTokens(info?.tokens)
   if (aggregate <= 0) return visible <= 0
-  return visible >= aggregate * 0.99 && visible <= aggregate * 1.01
+  return visible >= aggregate * 0.97
 }
 
-function windowCost(info, messages, models) {
-  if (!info?.tokens) return null
-  const { cost, seen } = visibleMessages(messages, models)
-  return windowIsComplete(info, seen) ? cost : null
+function scaleTokens(t, factor) {
+  return {
+    input: (t.input ?? 0) * factor,
+    output: (t.output ?? 0) * factor,
+    reasoning: (t.reasoning ?? 0) * factor,
+    cache: { read: (t.cache?.read ?? 0) * factor, write: (t.cache?.write ?? 0) * factor },
+  }
 }
 
-function estimateCost(info, messages, models) {
+function estimateFrom(info, cover, models) {
   if (!info?.tokens) return 0
-  const { cost: visible, seen, oldestModel } = visibleMessages(messages, models)
   const aggregate = info.tokens
   const rest = {
-    input: Math.max(0, (aggregate.input ?? 0) - seen.input),
-    output: Math.max(0, (aggregate.output ?? 0) - seen.output),
-    reasoning: Math.max(0, (aggregate.reasoning ?? 0) - seen.reasoning),
+    input: Math.max(0, (aggregate.input ?? 0) - cover.seen.input),
+    output: Math.max(0, (aggregate.output ?? 0) - cover.seen.output),
+    reasoning: Math.max(0, (aggregate.reasoning ?? 0) - cover.seen.reasoning),
     cache: {
-      read: Math.max(0, (aggregate.cache?.read ?? 0) - seen.cache.read),
-      write: Math.max(0, (aggregate.cache?.write ?? 0) - seen.cache.write),
+      read: Math.max(0, (aggregate.cache?.read ?? 0) - cover.seen.cache.read),
+      write: Math.max(0, (aggregate.cache?.write ?? 0) - cover.seen.cache.write),
     },
   }
-  const viuMais = seen.input > (aggregate.input ?? 0) || seen.cache.read > (aggregate.cache?.read ?? 0)
-  if (viuMais) return pricedCost(aggregate, findModel(models, info.model ?? oldestModel), 0)
-  return visible + pricedCost(rest, findModel(models, oldestModel ?? info.model), 0)
+  const viuMais = totalTokens(cover.seen) >= totalTokens(aggregate) * 0.97
+  if (viuMais) return cover.cost
+  let visited = 0
+  for (const bucket of cover.byModel.values()) visited += bucket.tokens
+  if (visited <= 0) return cover.cost + pricedCost(rest, findModel(models, cover.oldestModel ?? info.model), 0)
+  let restCost = 0
+  for (const bucket of cover.byModel.values()) restCost += pricedCost(scaleTokens(rest, bucket.tokens / visited), bucket.info, 0)
+  return cover.cost + restCost
 }
 
-function tailCost(messages, models) {
-  let total = 0
+function unpriced(cover, complete, messages, models) {
+  let cost = 0
+  let bounded = complete
+  let unknown = cover.unknown
+  if (messages.length === 0) return { cost, bounded, unknown }
+  let found = false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (m?.type !== "assistant") continue
-    if (typeof m.cost === "number" && m.cost > 0) break
+    if (typeof m.cost === "number" && m.cost > 0) {
+      found = true
+      break
+    }
     if (!m.tokens) continue
-    total += pricedCost(m.tokens, findModel(models, m.model))
+    const price = findModel(models, m.model)
+    if (!price) unknown = true
+    cost += pricedCost(m.tokens, price)
   }
-  return total
+  if (!found) bounded = false
+  return { cost, bounded, unknown }
 }
 
 function resolveCost(real, info, messages, models) {
+  const cover = visibleMessages(messages, models)
+  const complete = windowIsComplete(info, cover.seen)
   const cost = typeof real === "number" && Number.isFinite(real) && real > 0 ? real : null
-  if (cost === null) return { value: windowCost(info, messages, models) ?? estimateCost(info, messages, models), estimated: true }
-  const tail = tailCost(messages, models)
-  if (tail <= 0) return { value: cost, estimated: false }
-  return { value: cost + tail, estimated: true }
+  if (cost === null) {
+    return { value: complete ? cover.cost : estimateFrom(info, cover, models), estimated: true, partial: false, unknown: cover.unknown }
+  }
+  const tail = unpriced(cover, complete, messages, models)
+  if (tail.cost <= 0) return { value: cost, estimated: false, partial: false, unknown: tail.unknown }
+  return { value: cost + tail.cost, estimated: true, partial: !tail.bounded, unknown: tail.unknown }
 }
 
 // ---------------------------------------------------------------- fixtures
@@ -294,33 +323,63 @@ test("lista vazia com agregado preenchido não vira $0.00", () => {
   assert.ok(Math.abs(out.value - esperado) < 1e-12, `${out.value} vs ${esperado}`)
 })
 
-test("janela vê mais tokens que o agregado (revert) e usa o agregado", () => {
+test("janela com mais tokens que o agregado usa a janela (revert não estorna gasto)", () => {
   const msgs = Array.from({ length: 5 }, (_, i) => msg("m" + i, ref(cheap), tok(1000, 100, 1_000_000), 0))
   const info = { tokens: tok(100, 10, 100_000), model: ref(cheap) }
   const out = resolveCost(0, info, msgs, models)
-  const agregado = (100 * 0.15 + 10 * 0.6 + 100_000 * 0.003) / 1e6
-  assert.ok(Math.abs(out.value - agregado) < 1e-12, `${out.value} vs ${agregado}`)
+  const visivel = msgs.reduce((a, m) => a + pricedCost(m.tokens, cheap), 0)
+  assert.ok(Math.abs(out.value - visivel) < 1e-12, `${out.value} vs ${visivel}`)
 })
 
-test("resto é precificado pelo modelo mais antigo visível, não pelo atual", () => {
-  // troca de modelo barato -> caro dentro da janela; o resto (escondido) é mais
-  // antigo que o mais antigo visível, então deve seguir o barato
+test("resto é rateado entre os modelos vistos na janela", () => {
+  // 5 msgs baratas + 5 caras (mesmo volume) => o trecho escondido paga metade em
+  // cada tabela, em vez de assumir um único modelo
   const baratas = Array.from({ length: 5 }, (_, i) => msg("b" + i, ref(cheap), tok(100, 10, 100_000), 0))
   const caras = Array.from({ length: 5 }, (_, i) => msg("p" + i, ref(pricey), tok(100, 10, 100_000), 0))
   const janela = [...baratas, ...caras]
+  const escondido = { input: 4_000_000, output: 0, reasoning: 0, cache: { read: 20_000_000, write: 0 } }
+  const visivel = sumTokens(janela)
   const info = {
     model: ref(pricey),
     tokens: {
-      input: 100 * 10 + 4_000_000,
-      output: 200,
+      input: (visivel.input ?? 0) + escondido.input,
+      output: visivel.output ?? 0,
       reasoning: 0,
-      cache: { read: 100_000 * 10 + 20_000_000, write: 0 },
+      cache: { read: visivel.cache.read + escondido.cache.read, write: 0 },
     },
   }
   const out = resolveCost(0, info, janela, models)
-  const comBarato = (4_000_000 * 0.15) / 1e6 + (20_000_000 * 0.003) / 1e6
-  const comCaro = (4_000_000 * 2) / 1e6 + (20_000_000 * 0.25) / 1e6
-  assert.ok(out.value < (comBarato + comCaro) / 2, `usou modelo caro no resto: ${out.value}`)
+  const metadeBarata = ((escondido.input * 0.15) / 1e6 + (escondido.cache.read * 0.003) / 1e6) / 2
+  const metadeCara = ((escondido.input * 2) / 1e6 + (escondido.cache.read * 0.25) / 1e6) / 2
+  const visivelCusto = janela.reduce((a, m) => a + pricedCost(m.tokens, m === janela[0] ? cheap : null), 0)
+  assert.ok(out.value > metadeBarata, "não pode ignorar o modelo caro")
+  assert.ok(out.value < metadeBarata + metadeCara + 1, "não pode inflar")
+  assert.ok(out.value > visivelCusto)
+})
+
+test("cauda maior que o histórico é marcada como piso (partial)", () => {
+  const msgs = Array.from({ length: 10 }, (_, i) => msg("m" + i, ref(cheap), tok(100, 10, 100_000), 0))
+  const info = { tokens: { ...sumTokens(msgs), cache: { read: 50_000_000, write: 0 } }, model: ref(cheap) }
+  const out = resolveCost(0.5, info, msgs, models)
+  assert.equal(out.partial, true)
+})
+
+test("cauda com fronteira visível não é piso", () => {
+  const msgs = [
+    msg("velha", ref(cheap), tok(100, 10, 100_000), 0.004),
+    msg("nova", ref(cheap), tok(100, 10, 100_000), 0),
+  ]
+  const info = { tokens: sumTokens(msgs), model: ref(cheap) }
+  const out = resolveCost(0.004, info, msgs, models)
+  assert.equal(out.partial, false)
+})
+
+test("modelo fora do catálogo marca o valor com *", () => {
+  const desconhecido = { id: "modelo-local", providerID: "custom", cost: [{ input: 0.1, output: 0.2, cache: { read: 0, write: 0 } }] }
+  const msgs = [msg("a", ref(desconhecido), tok(1000, 100, 0), 0)]
+  const out = resolveCost(0, { tokens: sumTokens(msgs), model: ref(desconhecido) }, msgs, models)
+  assert.equal(out.unknown, true)
+  assert.equal(out.value, 0)
 })
 
 test("mensagem com cost ausente conta como sem preço", () => {
@@ -363,12 +422,13 @@ test("estimativa de família grande fica rápida", () => {
 // ---------------------------------------------------------------- drift guard
 test("tui.tsx mantém os marcadores da réplica", () => {
   const obrigatorios = [
-    "return visible >= aggregate * 0.99 && visible <= aggregate * 1.01",
-    "const viuMais = seen.input > (aggregate.input ?? 0)",
-    "oldestModel ?? info.model ?? model()",
-    "if (typeof msg.cost === \"number\" && msg.cost > 0) break",
-    "if (!msg.tokens) continue",
-    "windowCost() ?? estimateCost()",
+    "return visible >= aggregate * 0.97",
+    "if (totalTokens(cover.seen) >= totalTokens(aggregate) * 0.97) return cover.cost",
+    "restCost += pricedCost(scaleTokens(rest, bucket.tokens / visited), bucket.info, 0)",
+    "if (typeof msg.cost === \"number\" && msg.cost > 0) {",
+    "if (!found) bounded = false",
+    "partial: !tail.bounded",
+    "message.list({ sessionID: props.sessionID, limit: 200, order: \"desc\", type: \"assistant\" })",
   ]
   for (const marcador of obrigatorios) {
     assert.ok(SOURCE.includes(marcador), `marcador ausente no tui.tsx: ${marcador}`)
