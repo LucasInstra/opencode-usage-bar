@@ -308,6 +308,29 @@ function fmtTokens(n: number): string {
   return (n / 1_000_000).toFixed(1) + "M"
 }
 
+// Custo estimado: sessões curtas somam frações de centavo, então usa 4 casas
+// abaixo de $0.01 em vez de arredondar tudo para 0.00.
+function fmtCost(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0.00"
+  if (value < 0.01) return "$" + value.toFixed(4)
+  return "$" + value.toFixed(2)
+}
+
+// Custo estimado a partir dos tokens agregados da sessão e do preço do catálogo
+// (que é por 1M tokens). O reasoning é cobrado como output. `cost` pode ter
+// camadas por tamanho de contexto; usamos a primeira (os modelos atuais têm uma).
+function tokensCost(tokens: any, price: any): number {
+  if (!tokens || !price) return 0
+  const t = tokens
+  return (
+    ((t.input ?? 0) * (price.input ?? 0) +
+      ((t.output ?? 0) + (t.reasoning ?? 0)) * (price.output ?? 0) +
+      (t.cache?.read ?? 0) * (price.cache?.read ?? 0) +
+      (t.cache?.write ?? 0) * (price.cache?.write ?? 0)) /
+    1_000_000
+  )
+}
+
 function fmtDur(ms: number): string {
   if (ms <= 0) return "0m"
   const min = Math.floor(ms / 60_000)
@@ -878,6 +901,37 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     return Math.round(w.percent * 100)
   })
 
+  // Custo da sessão: o host grava o custo reportado pelo gateway. Em planos Go o
+  // gateway reporta 0 porque a requisição está coberta pela assinatura (mudança
+  // do 2.2.0, #58562) — não é erro. Quando o valor real é 0, estimamos pelos
+  // tokens da sessão × preço do catálogo e marcamos com "~", igual ao % do plano.
+  // Os tokens de uma sessão raiz já agregam a família (subagentes).
+  function estimateCost(): number {
+    const info = session()
+    if (!info?.tokens) return 0
+    let models: any[] = []
+    try {
+      models = ctx.data.location.model.list(location()) ?? []
+    } catch {
+      models = []
+    }
+    const ref = info.model ?? model()
+    const found = models.find((x: any) => sameModel(ref, x))
+    return tokensCost(info.tokens, found?.cost?.[0])
+  }
+
+  const sessionCost = createMemo(() => {
+    let real: number | null = null
+    try {
+      const value = ctx.data.session.cost(props.sessionID)
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) real = value
+    } catch {
+      real = null
+    }
+    if (real !== null) return { value: real, estimated: false }
+    return { value: estimateCost(), estimated: true }
+  })
+
   async function statsFor(m: any, from: number, to: number): Promise<any | null> {
     try {
       const res = await deadline(Promise.resolve(client.session.stats({ from, to, tools: "none" })), 15_000)
@@ -1179,14 +1233,11 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
 
   const costText = createMemo(() => {
     if (!CONFIG.show.cost) return null
-    let cost = 0
-    try {
-      // data.session.cost soma a família toda (sessão + subagentes) quando é a raiz
-      cost = ctx.data.session.cost(props.sessionID) ?? 0
-    } catch {
-      cost = session()?.cost ?? 0
-    }
-    return `$${cost.toFixed(2)}`
+    // Valor real gravado pelo host; em sessões Go ele é 0 (o gateway reporta 0
+    // porque a assinatura cobre a requisição — #58562), então exibimos a
+    // estimativa pelo catálogo, marcada com "~".
+    const c = sessionCost()
+    return `${c.estimated ? "~" : ""}${fmtCost(c.value)}`
   })
 
   const hot = (kind: "path" | "branch" | "diff") =>
