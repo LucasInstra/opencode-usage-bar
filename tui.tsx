@@ -316,9 +316,12 @@ function fmtCost(value: number): string {
   return "$" + value.toFixed(2)
 }
 
+// Teto da janela de mensagens que a API devolve (as mais recentes). Uma lista
+// menor que isso é a sessão inteira; igual ou maior pode estar truncada.
+const MESSAGE_WINDOW = 50
+
 // Custo estimado a partir dos tokens agregados da sessão e do preço do catálogo
-// (que é por 1M tokens). O reasoning é cobrado como output. `cost` pode ter
-// camadas por tamanho de contexto; usamos a primeira (os modelos atuais têm uma).
+// (que é por 1M tokens). O reasoning é cobrado como output.
 function tokensCost(tokens: any, price: any): number {
   if (!tokens || !price) return 0
   const t = tokens
@@ -329,6 +332,26 @@ function tokensCost(tokens: any, price: any): number {
       (t.cache?.write ?? 0) * (price.cache?.write ?? 0)) /
     1_000_000
   )
+}
+
+// Tamanho do prompt = tudo que o modelo leu naquela chamada.
+function promptTokens(tokens: any): number {
+  return (tokens?.input ?? 0) + (tokens?.cache?.read ?? 0) + (tokens?.cache?.write ?? 0)
+}
+
+// Alguns modelos têm faixa de preço por contexto (ex.: claude-haiku-5-5 custa 5x
+// acima de 100k). A 1ª entrada é a faixa base; as seguintes trazem `tier.size` e
+// valem quando o prompt passa daquele tamanho. Sem `promptHint`, usa o próprio
+// prompt da mensagem (exato para passo a passo).
+function pricedCost(tokens: any, info: any, promptHint?: number): number {
+  const tiers = info?.cost
+  if (!tokens || !Array.isArray(tiers) || tiers.length === 0) return 0
+  const size = promptHint ?? promptTokens(tokens)
+  let price = tiers[0]
+  for (const tier of tiers) {
+    if (typeof tier?.tier?.size === "number" && size > tier.tier.size) price = tier
+  }
+  return tokensCost(tokens, price)
 }
 
 function fmtDur(ms: number): string {
@@ -908,18 +931,56 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
   // (sessão que atravessou a atualização), somamos só a cauda sem preço, que
   // está na janela de mensagens — assim não reprecificamos tokens antigos com a
   // tabela de hoje.
+  // Estimativa quando a janela truncou: precifica a parte visível passo a passo
+  // (com faixa de preço por contexto) e o resto da sessão pela faixa base, já que
+  // são os passos mais antigos, com contexto menor.
   function estimateCost(): number {
     const info = session()
     if (!info?.tokens) return 0
+    let ids: string[] = [props.sessionID]
+    try {
+      const family = ctx.data.session.family(props.sessionID)
+      if (Array.isArray(family) && family.length > 0) ids = family
+    } catch {
+      ids = [props.sessionID]
+    }
     let models: any[] = []
     try {
       models = ctx.data.location.model.list(location()) ?? []
     } catch {
       models = []
     }
-    const ref = info.model ?? model()
-    const found = models.find((x: any) => sameModel(ref, x))
-    return tokensCost(info.tokens, found?.cost?.[0])
+    const found = models.find((x: any) => sameModel(info.model ?? model(), x))
+    let visible = 0
+    const seen = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+    for (const id of ids) {
+      let msgs: any[] = []
+      try {
+        msgs = ctx.data.session.message.list(id) ?? []
+      } catch {
+        msgs = []
+      }
+      for (const msg of msgs) {
+        if (msg?.type !== "assistant" || !msg.tokens) continue
+        const price = models.find((x: any) => sameModel(msg.model, x))
+        visible += pricedCost(msg.tokens, price)
+        seen.input += msg.tokens.input ?? 0
+        seen.output += msg.tokens.output ?? 0
+        seen.reasoning += msg.tokens.reasoning ?? 0
+        seen.cache.read += msg.tokens.cache?.read ?? 0
+        seen.cache.write += msg.tokens.cache?.write ?? 0
+      }
+    }
+    const rest = {
+      input: Math.max(0, (info.tokens.input ?? 0) - seen.input),
+      output: Math.max(0, (info.tokens.output ?? 0) - seen.output),
+      reasoning: Math.max(0, (info.tokens.reasoning ?? 0) - seen.reasoning),
+      cache: {
+        read: Math.max(0, (info.tokens.cache?.read ?? 0) - seen.cache.read),
+        write: Math.max(0, (info.tokens.cache?.write ?? 0) - seen.cache.write),
+      },
+    }
+    return visible + pricedCost(rest, found, 0)
   }
 
   // Custo das mensagens mais recentes que ficaram sem preço (cost 0/ausente),
@@ -953,10 +1014,47 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
         if (msg?.type !== "assistant" || !msg.tokens) continue
         if (typeof msg.cost === "number" && msg.cost > 0) break
         const found = models.find((x: any) => sameModel(msg.model, x))
-        total += tokensCost(msg.tokens, found?.cost?.[0])
+        total += pricedCost(msg.tokens, found)
       }
     }
     return total
+  }
+
+  // Sessão inteira sem preço (Go): precifica mensagem a mensagem quando a janela
+  // está completa. A API devolve no máximo ~50 mensagens, então uma lista menor
+  // que isso é a sessão toda — nesse caso modelo grátis ou troca de modelo no
+  // meio não distorcem. Se a lista truncou, devolve null e cai no agregado.
+  function windowCost(): number | null {
+    let ids: string[] = [props.sessionID]
+    try {
+      const family = ctx.data.session.family(props.sessionID)
+      if (Array.isArray(family) && family.length > 0) ids = family
+    } catch {
+      ids = [props.sessionID]
+    }
+    let models: any[] = []
+    try {
+      models = ctx.data.location.model.list(location()) ?? []
+    } catch {
+      models = []
+    }
+    let total = 0
+    let complete = true
+    for (const id of ids) {
+      let msgs: any[] = []
+      try {
+        msgs = ctx.data.session.message.list(id) ?? []
+      } catch {
+        msgs = []
+      }
+      if (msgs.length >= MESSAGE_WINDOW) complete = false
+      for (const msg of msgs) {
+        if (msg?.type !== "assistant" || !msg.tokens) continue
+        const found = models.find((x: any) => sameModel(msg.model, x))
+        total += pricedCost(msg.tokens, found)
+      }
+    }
+    return complete ? total : null
   }
 
   const sessionCost = createMemo(() => {
@@ -968,7 +1066,7 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
       real = null
     }
     // Nada gravado: o host não precifica sessões Go, então estima a sessão toda.
-    if (real === null) return { value: estimateCost(), estimated: true }
+    if (real === null) return { value: windowCost() ?? estimateCost(), estimated: true }
     // Gravado: soma apenas a cauda que ficou sem preço.
     const tail = unpricedCost()
     if (tail <= 0) return { value: real, estimated: false }
