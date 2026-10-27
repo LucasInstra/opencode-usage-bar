@@ -920,6 +920,23 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     return tokensCost(info.tokens, found?.cost?.[0])
   }
 
+  // Último passo do assistente sem custo gravado = a precificação parou no meio
+  // da sessão (mudança do 2.2.0), então o agregado da sessão está incompleto.
+  function pricingStopped(): boolean {
+    let msgs: any[] = []
+    try {
+      msgs = ctx.data.session.message.list(props.sessionID) ?? []
+    } catch {
+      return false
+    }
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i]
+      if (msg?.type !== "assistant" || !msg.tokens) continue
+      return !(typeof msg.cost === "number" && msg.cost > 0)
+    }
+    return false
+  }
+
   const sessionCost = createMemo(() => {
     let real: number | null = null
     try {
@@ -928,8 +945,11 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     } catch {
       real = null
     }
-    if (real !== null) return { value: real, estimated: false }
-    return { value: estimateCost(), estimated: true }
+    // O total gravado só vale se o último passo do assistente foi precificado.
+    // Sessão que começou antes do 2.2.0 e continuou depois fica com o valor
+    // congelado (a parte nova entra com custo 0), então aí estimamos.
+    if (real !== null && !pricingStopped()) return { value: real, estimated: false }
+    return { value: Math.max(real ?? 0, estimateCost()), estimated: true }
   })
 
   async function statsFor(m: any, from: number, to: number): Promise<any | null> {
