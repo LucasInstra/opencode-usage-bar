@@ -316,22 +316,19 @@ function fmtCost(value: number): string {
   return "$" + value.toFixed(2)
 }
 
-// Teto da janela de mensagens que a API devolve (as mais recentes). Uma lista
-// menor que isso é a sessão inteira; igual ou maior pode estar truncada.
-const MESSAGE_WINDOW = 50
-
 // Custo estimado a partir dos tokens agregados da sessão e do preço do catálogo
-// (que é por 1M tokens). O reasoning é cobrado como output.
+// (que é por 1M tokens). O reasoning é cobrado como output. Preço inválido no
+// catálogo vira NaN; devolvemos 0 em vez de propagar para a barra.
 function tokensCost(tokens: any, price: any): number {
   if (!tokens || !price) return 0
   const t = tokens
-  return (
+  const value =
     ((t.input ?? 0) * (price.input ?? 0) +
       ((t.output ?? 0) + (t.reasoning ?? 0)) * (price.output ?? 0) +
       (t.cache?.read ?? 0) * (price.cache?.read ?? 0) +
       (t.cache?.write ?? 0) * (price.cache?.write ?? 0)) /
     1_000_000
-  )
+  return Number.isFinite(value) ? value : 0
 }
 
 // Tamanho do prompt = tudo que o modelo leu naquela chamada.
@@ -927,33 +924,37 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
   // Custo da sessão: o host grava o custo reportado pelo gateway. Em planos Go o
   // gateway reporta 0 porque a requisição está coberta pela assinatura (mudança
   // do 2.2.0, #58562) — não é erro. Quando a sessão inteira está sem preço,
-  // estimamos pelo agregado de tokens × catálogo. Quando o host gravou parte
-  // (sessão que atravessou a atualização), somamos só a cauda sem preço, que
-  // está na janela de mensagens — assim não reprecificamos tokens antigos com a
-  // tabela de hoje.
-  // Estimativa quando a janela truncou: precifica a parte visível passo a passo
-  // (com faixa de preço por contexto) e o resto da sessão pela faixa base, já que
-  // são os passos mais antigos, com contexto menor.
-  function estimateCost(): number {
-    const info = session()
-    if (!info?.tokens) return 0
-    let ids: string[] = [props.sessionID]
+  // estimamos pelos tokens. Quando o host gravou parte (sessão que atravessou a
+  // atualização), somamos só a cauda sem preço, que está na janela de mensagens —
+  // assim não reprecificamos tokens antigos com a tabela de hoje.
+
+  function familyIDs(): string[] {
     try {
       const family = ctx.data.session.family(props.sessionID)
-      if (Array.isArray(family) && family.length > 0) ids = family
+      if (Array.isArray(family) && family.length > 0) return family
     } catch {
-      ids = [props.sessionID]
+      // sem família: fica só a sessão
     }
-    let models: any[] = []
+    return [props.sessionID]
+  }
+
+  function availableModels(): any[] {
     try {
-      models = ctx.data.location.model.list(location()) ?? []
+      return ctx.data.location.model.list(location()) ?? []
     } catch {
-      models = []
+      return []
     }
-    const found = models.find((x: any) => sameModel(info.model ?? model(), x))
-    let visible = 0
+  }
+
+  // Varre a janela de mensagens (a API devolve no máximo ~50 por sessão) e devolve
+  // o custo já precificado passo a passo, os tokens vistos e o modelo mais antigo
+  // visível — que é a melhor pista do modelo usado nos passos fora da janela.
+  function visibleMessages() {
+    const models = availableModels()
     const seen = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-    for (const id of ids) {
+    let cost = 0
+    let oldestModel: any = null
+    for (const id of familyIDs()) {
       let msgs: any[] = []
       try {
         msgs = ctx.data.session.message.list(id) ?? []
@@ -962,24 +963,72 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
       }
       for (const msg of msgs) {
         if (msg?.type !== "assistant" || !msg.tokens) continue
-        const price = models.find((x: any) => sameModel(msg.model, x))
-        visible += pricedCost(msg.tokens, price)
+        const found = models.find((x: any) => sameModel(msg.model, x))
+        cost += pricedCost(msg.tokens, found)
         seen.input += msg.tokens.input ?? 0
         seen.output += msg.tokens.output ?? 0
         seen.reasoning += msg.tokens.reasoning ?? 0
         seen.cache.read += msg.tokens.cache?.read ?? 0
         seen.cache.write += msg.tokens.cache?.write ?? 0
+        if (!oldestModel) {
+          oldestModel = msg.model
+        }
       }
     }
+    return { cost, seen, oldestModel }
+  }
+
+  const totalTokens = (t: any) =>
+    (t?.input ?? 0) + (t?.output ?? 0) + (t?.reasoning ?? 0) + (t?.cache?.read ?? 0) + (t?.cache?.write ?? 0)
+
+  // A janela cobre a sessão inteira? Compara os tokens vistos com o agregado da
+  // sessão em vez de confiar no tamanho da lista (o teto é "até 50", não "50").
+  // Viu bem mais que o agregado = estado inconsistente (revert), então não vale.
+  function windowIsComplete(info: any, seen: any): boolean {
+    const visible = totalTokens(seen)
+    const aggregate = totalTokens(info?.tokens)
+    if (aggregate <= 0) return visible <= 0
+    return visible >= aggregate * 0.99 && visible <= aggregate * 1.01
+  }
+
+  // Sessão inteira sem preço (Go): precifica passo a passo quando a janela cobre
+  // tudo — assim modelo grátis ou troca de modelo não distorcem. Se truncou,
+  // devolve null e cai no agregado.
+  function windowCost(): number | null {
+    const info = session()
+    if (!info?.tokens) return null
+    const { cost, seen } = visibleMessages()
+    return windowIsComplete(info, seen) ? cost : null
+  }
+
+  // Fallback quando a janela truncou: precifica a parte visível passo a passo (com
+  // faixa de preço por contexto) e o resto da sessão pela faixa base. O resto é o
+  // trecho mais antigo, então normalmente tem contexto menor que o atual.
+  function estimateCost(): number {
+    const info = session()
+    if (!info?.tokens) return 0
+    const models = availableModels()
+    const { cost: visible, seen, oldestModel } = visibleMessages()
+    const aggregate = info.tokens
     const rest = {
-      input: Math.max(0, (info.tokens.input ?? 0) - seen.input),
-      output: Math.max(0, (info.tokens.output ?? 0) - seen.output),
-      reasoning: Math.max(0, (info.tokens.reasoning ?? 0) - seen.reasoning),
+      input: Math.max(0, (aggregate.input ?? 0) - seen.input),
+      output: Math.max(0, (aggregate.output ?? 0) - seen.output),
+      reasoning: Math.max(0, (aggregate.reasoning ?? 0) - seen.reasoning),
       cache: {
-        read: Math.max(0, (info.tokens.cache?.read ?? 0) - seen.cache.read),
-        write: Math.max(0, (info.tokens.cache?.write ?? 0) - seen.cache.write),
+        read: Math.max(0, (aggregate.cache?.read ?? 0) - seen.cache.read),
+        write: Math.max(0, (aggregate.cache?.write ?? 0) - seen.cache.write),
       },
     }
+    // Viu mais tokens do que o agregado = estado inconsistente (revert, fork ou
+    // família com semântica diferente). Aí o agregado é a fonte confiável.
+    const viuMais = seen.input > (aggregate.input ?? 0) || seen.cache.read > (aggregate.cache?.read ?? 0)
+    if (viuMais) {
+      const found = models.find((x: any) => sameModel(info.model ?? oldestModel ?? model(), x))
+      return pricedCost(aggregate, found, 0)
+    }
+    // O modelo do trecho escondido é mais parecido com o mais antigo visível do
+    // que com o modelo atual da sessão (que pode ter mudado no meio).
+    const found = models.find((x: any) => sameModel(oldestModel ?? info.model ?? model(), x))
     return visible + pricedCost(rest, found, 0)
   }
 
@@ -988,21 +1037,9 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
   // subagentes e precifica cada passo pelo modelo que ele usou. É um piso: se a
   // cauda passar da janela de ~50 mensagens da API, o excedente fica de fora.
   function unpricedCost(): number {
-    let ids: string[] = [props.sessionID]
-    try {
-      const family = ctx.data.session.family(props.sessionID)
-      if (Array.isArray(family) && family.length > 0) ids = family
-    } catch {
-      ids = [props.sessionID]
-    }
-    let models: any[] = []
-    try {
-      models = ctx.data.location.model.list(location()) ?? []
-    } catch {
-      models = []
-    }
+    const models = availableModels()
     let total = 0
-    for (const id of ids) {
+    for (const id of familyIDs()) {
       let msgs: any[] = []
       try {
         msgs = ctx.data.session.message.list(id) ?? []
@@ -1011,50 +1048,16 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
       }
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i]
-        if (msg?.type !== "assistant" || !msg.tokens) continue
+        if (msg?.type !== "assistant") continue
+        // precificação primeiro: uma mensagem com custo mas sem tokens (ex.:
+        // compactação) também marca o fim da cauda sem preço.
         if (typeof msg.cost === "number" && msg.cost > 0) break
+        if (!msg.tokens) continue
         const found = models.find((x: any) => sameModel(msg.model, x))
         total += pricedCost(msg.tokens, found)
       }
     }
     return total
-  }
-
-  // Sessão inteira sem preço (Go): precifica mensagem a mensagem quando a janela
-  // está completa. A API devolve no máximo ~50 mensagens, então uma lista menor
-  // que isso é a sessão toda — nesse caso modelo grátis ou troca de modelo no
-  // meio não distorcem. Se a lista truncou, devolve null e cai no agregado.
-  function windowCost(): number | null {
-    let ids: string[] = [props.sessionID]
-    try {
-      const family = ctx.data.session.family(props.sessionID)
-      if (Array.isArray(family) && family.length > 0) ids = family
-    } catch {
-      ids = [props.sessionID]
-    }
-    let models: any[] = []
-    try {
-      models = ctx.data.location.model.list(location()) ?? []
-    } catch {
-      models = []
-    }
-    let total = 0
-    let complete = true
-    for (const id of ids) {
-      let msgs: any[] = []
-      try {
-        msgs = ctx.data.session.message.list(id) ?? []
-      } catch {
-        msgs = []
-      }
-      if (msgs.length >= MESSAGE_WINDOW) complete = false
-      for (const msg of msgs) {
-        if (msg?.type !== "assistant" || !msg.tokens) continue
-        const found = models.find((x: any) => sameModel(msg.model, x))
-        total += pricedCost(msg.tokens, found)
-      }
-    }
-    return complete ? total : null
   }
 
   const sessionCost = createMemo(() => {

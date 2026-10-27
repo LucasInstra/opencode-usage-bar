@@ -130,6 +130,12 @@ Result: `[in.pulse-analytics] Fix flaky test`. Optional overrides live in `~/.co
 
 `index.ts` is a no-op server entry so OpenCode discovers the plugin (TUI plugins need one). `tui.tsx` is the whole UI: it claims `prepend`/`append` on the `prompt.footer` slot, fetches the official usage on a `refreshSeconds` interval, and reacts to session/model/folder changes.
 
+### Session cost
+
+Since opencode 2.2.0 the host records the cost the gateway reports instead of pricing tokens from the catalog, and the gateway reports `0` for OpenCode Go because the request is covered by the subscription — so sessions show nothing. The bar then estimates: tokens × catalog price, always marked `~`.
+
+It prices **per step** whenever the message window covers the session (model switches, free models and context price tiers are honored), and per session aggregate when the window is truncated by the API (~50 messages). For sessions that crossed the 2.2.0 upgrade, only the unpriced tail is added on top of the recorded value, so old tokens are never repriced with today's table.
+
 Deep history, decisions and validation notes live in [HANDOFF.md](HANDOFF.md).
 
 ## Development
@@ -138,4 +144,10 @@ Edit `tui.tsx`/`config.json`, then restart the TUI. Syntax check without running
 
 ```sh
 bun build tui.tsx --outfile /tmp/usage-bar.js --external solid-js --external "@opentui/solid" --external "@opencode/plugin/tui"
+```
+
+Cost logic has tests (they extract the real pricing helpers from `tui.tsx`):
+
+```sh
+node --test test/cost.test.mjs
 ```
