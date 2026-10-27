@@ -903,9 +903,11 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
 
   // Custo da sessão: o host grava o custo reportado pelo gateway. Em planos Go o
   // gateway reporta 0 porque a requisição está coberta pela assinatura (mudança
-  // do 2.2.0, #58562) — não é erro. Quando o valor real é 0, estimamos pelos
-  // tokens da sessão × preço do catálogo e marcamos com "~", igual ao % do plano.
-  // Os tokens de uma sessão raiz já agregam a família (subagentes).
+  // do 2.2.0, #58562) — não é erro. Quando a sessão inteira está sem preço,
+  // estimamos pelo agregado de tokens × catálogo. Quando o host gravou parte
+  // (sessão que atravessou a atualização), somamos só a cauda sem preço, que
+  // está na janela de mensagens — assim não reprecificamos tokens antigos com a
+  // tabela de hoje.
   function estimateCost(): number {
     const info = session()
     if (!info?.tokens) return 0
@@ -920,21 +922,41 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     return tokensCost(info.tokens, found?.cost?.[0])
   }
 
-  // Último passo do assistente sem custo gravado = a precificação parou no meio
-  // da sessão (mudança do 2.2.0), então o agregado da sessão está incompleto.
-  function pricingStopped(): boolean {
-    let msgs: any[] = []
+  // Custo das mensagens mais recentes que ficaram sem preço (cost 0/ausente),
+  // andando de trás para frente até a primeira mensagem precificada. Cobre os
+  // subagentes e precifica cada passo pelo modelo que ele usou. É um piso: se a
+  // cauda passar da janela de ~50 mensagens da API, o excedente fica de fora.
+  function unpricedCost(): number {
+    let ids: string[] = [props.sessionID]
     try {
-      msgs = ctx.data.session.message.list(props.sessionID) ?? []
+      const family = ctx.data.session.family(props.sessionID)
+      if (Array.isArray(family) && family.length > 0) ids = family
     } catch {
-      return false
+      ids = [props.sessionID]
     }
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const msg = msgs[i]
-      if (msg?.type !== "assistant" || !msg.tokens) continue
-      return !(typeof msg.cost === "number" && msg.cost > 0)
+    let models: any[] = []
+    try {
+      models = ctx.data.location.model.list(location()) ?? []
+    } catch {
+      models = []
     }
-    return false
+    let total = 0
+    for (const id of ids) {
+      let msgs: any[] = []
+      try {
+        msgs = ctx.data.session.message.list(id) ?? []
+      } catch {
+        msgs = []
+      }
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i]
+        if (msg?.type !== "assistant" || !msg.tokens) continue
+        if (typeof msg.cost === "number" && msg.cost > 0) break
+        const found = models.find((x: any) => sameModel(msg.model, x))
+        total += tokensCost(msg.tokens, found?.cost?.[0])
+      }
+    }
+    return total
   }
 
   const sessionCost = createMemo(() => {
@@ -945,11 +967,12 @@ function UsageBar(props: { context: any; sessionID: string; part: "plan" | "rest
     } catch {
       real = null
     }
-    // O total gravado só vale se o último passo do assistente foi precificado.
-    // Sessão que começou antes do 2.2.0 e continuou depois fica com o valor
-    // congelado (a parte nova entra com custo 0), então aí estimamos.
-    if (real !== null && !pricingStopped()) return { value: real, estimated: false }
-    return { value: Math.max(real ?? 0, estimateCost()), estimated: true }
+    // Nada gravado: o host não precifica sessões Go, então estima a sessão toda.
+    if (real === null) return { value: estimateCost(), estimated: true }
+    // Gravado: soma apenas a cauda que ficou sem preço.
+    const tail = unpricedCost()
+    if (tail <= 0) return { value: real, estimated: false }
+    return { value: real + tail, estimated: true }
   })
 
   async function statsFor(m: any, from: number, to: number): Promise<any | null> {
